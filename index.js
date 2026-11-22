@@ -1276,10 +1276,51 @@ export function apply(ctx, config) {
     res.end(req.method === 'HEAD' ? undefined : bytes)
   }
 
+  /**
+   * Hosts this route accepts. Without this check the read endpoints are open to
+   * DNS rebinding: a hostile page whose domain resolves to 127.0.0.1 sends
+   * `Host: evil.example`, which the browser still counts as same-origin, so the
+   * Sec-Fetch-Site / Referer guards above pass and the gallery can be read.
+   * Accepting only loopback names plus the address this listener actually
+   * serves is what closes that hole.
+   */
+  let trustedHostnamesCache = null
+  function trustedHostnames() {
+    if (trustedHostnamesCache) return trustedHostnamesCache
+    const names = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
+    try {
+      const origin = typeof ctx.webServer?.getOrigin === 'function' ? ctx.webServer.getOrigin() : undefined
+      if (origin) names.add(new URL(origin).hostname.toLowerCase())
+    } catch {
+      /* origin is unavailable before the port binds; loopback still applies */
+    }
+    trustedHostnamesCache = names
+    return names
+  }
+
+  function hostnameOfHeader(hostHeader) {
+    const raw = String(hostHeader || '').trim()
+    if (!raw) return ''
+    try {
+      return new URL(`http://${raw}`).hostname.toLowerCase()
+    } catch {
+      return ''
+    }
+  }
+
+  function assertTrustedHost(req) {
+    const hostname = hostnameOfHeader(req.headers.host)
+    if (!hostname || !trustedHostnames().has(hostname)) {
+      throw new HttpError(403, '这个接口只允许本机访问')
+    }
+  }
+
   async function route(req, res) {
     const url = new URL(req.url || '/', 'http://127.0.0.1')
     const sub = url.pathname.slice(prefix.length).replace(/^\/+/, '')
     const method = req.method || 'GET'
+
+    assertTrustedHost(req)
 
     if (method === 'OPTIONS') {
       res.writeHead(405, { allow: 'GET, HEAD, POST' })
