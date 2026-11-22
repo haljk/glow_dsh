@@ -66,21 +66,38 @@ machine without a hypervisor: every element actually on screen, in order.
 
 ### Not yet verified: a run on a device or emulator
 
-The x86_64 emulator needs a hypervisor driver, and installing one requires
-administrator rights, which this session does not have. The driver package is
-already downloaded:
+**Now verified on an emulator.** The x86_64 AVD needs the AEHD hypervisor
+driver, installed once from an elevated prompt:
 
 ```
 C:\Android\Sdk\extras\google\Android_Emulator_Hypervisor_Driver\silent_install.bat
 ```
 
-Run that in an **administrator** command prompt, then:
+`emulator -accel-check` then reports `0 · AEHD (version 2.2) is installed and usable`.
+The AVD `glow` must keep its real display profile (1080×2400 @ 420 dpi) in
+`config.ini` — overriding the size with `adb shell wm size` makes Android compute a
+146 dp status bar and the layout looks broken for reasons that have nothing to do
+with the app.
 
-```powershell
-C:\Android\Sdk\emulator\emulator.exe -avd glow -gpu swiftshader_indirect
-./tools/build-android.ps1 -Install
-```
+What was actually exercised, against the real services on the Mac mini:
 
-Until then, the following remain unproven on real hardware: foreground-service
-survival across app switches, upload of a real photo, and a real generation
-against the model service.
+| Step | Result |
+| --- | --- |
+| Install + launch on Android 16 | no crash, `topResumedActivity=Glow` |
+| Model service probe from the app | 出图已连接 / 助手已连接 |
+| Text to image, 1024² | **61.83 s**, 1024×1024 PNG written to the gallery |
+| App backgrounded for 75 s mid-job | job survived, came back showing 完成，已保存 1 张 |
+| Retouch with a picked photo | **412 s**, 672×1504 (aspect inherited from a 1:2.22 photo), reference copy saved |
+| Viewer comparison | opens in 切换 mode; swiping flips 原图 ↔ 结果 |
+
+Defects found by this run, and fixed:
+
+- The primary button sat under the gesture bar (targetSdk 36 enforces edge-to-edge).
+- The elapsed counter never ticked: a composition does not re-run on a clock, so
+  the banner stayed on "正在提交…" for the whole job.
+- `stopForeground(DETACH)` left the ongoing notification behind, which made the
+  system log `Stop FGS timeout`.
+- Failures were invisible in logcat; the service now logs the reason.
+
+Still unexercised on a device: 并排/滑动 comparison, 归档/删除/存到相册, and the
+multi-reference flow.

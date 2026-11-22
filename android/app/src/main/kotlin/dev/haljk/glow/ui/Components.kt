@@ -28,6 +28,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,6 +46,7 @@ import androidx.compose.foundation.Image
 import dev.haljk.glow.core.Density
 import dev.haljk.glow.data.GalleryItem
 import dev.haljk.glow.data.JobRegistry
+import kotlinx.coroutines.delay
 import java.util.Locale
 
 @Composable
@@ -187,7 +193,18 @@ fun StatusDot(ok: Boolean?, label: String) {
 
 @Composable
 fun JobBanner(snapshot: JobRegistry.Snapshot, onDismiss: () -> Unit) {
-    val elapsed = ((System.currentTimeMillis() - snapshot.startedAt) / 1000).coerceAtLeast(0)
+    // A composition does not re-run on a clock, so the elapsed counter needs its
+    // own ticker; without it the banner sits on "正在提交…" for the whole run.
+    var now by remember(snapshot.id, snapshot.status) { mutableStateOf(System.currentTimeMillis()) }
+    if (snapshot.status == JobRegistry.Status.RUNNING) {
+        LaunchedEffect(snapshot.id) {
+            while (true) {
+                now = System.currentTimeMillis()
+                delay(1000)
+            }
+        }
+    }
+    val elapsed = ((now - snapshot.startedAt) / 1000).coerceAtLeast(0)
     val finished = snapshot.status != JobRegistry.Status.RUNNING
     Surface(
         modifier = Modifier.fillMaxWidth(),

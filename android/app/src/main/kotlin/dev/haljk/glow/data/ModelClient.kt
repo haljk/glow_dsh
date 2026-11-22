@@ -31,7 +31,11 @@ class ModelException(message: String, cause: Throwable? = null) : Exception(mess
  * request. The desktop version hit exactly this class of bug with Node's fetch,
  * which silently caps response headers at 300 seconds.
  */
-class ModelClient(private val settings: Settings) {
+class ModelClient(
+    private val settings: Settings,
+    /** Back-off between 409 retries; overridable so tests need not wait 20 s. */
+    private val busyRetryDelayMs: Long = BUSY_RETRY_DELAY_MS,
+) {
 
     private val imageClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -129,7 +133,7 @@ class ModelClient(private val settings: Settings) {
                         if (attempt > MAX_BUSY_RETRIES) {
                             throw ModelException("图像服务一直很忙，请稍后再试")
                         }
-                        Thread.sleep(BUSY_RETRY_DELAY_MS)
+                        Thread.sleep(busyRetryDelayMs)
                         return@use
                     }
                     if (!response.isSuccessful) {
@@ -156,7 +160,8 @@ class ModelClient(private val settings: Settings) {
                 val entry = data.optJSONObject(index) ?: continue
                 val base64 = entry.optString("b64_json", "")
                 val bytes = when {
-                    base64.isNotEmpty() -> android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
+                    // java.util.Base64 needs API 26, which is this app's minimum.
+                    base64.isNotEmpty() -> java.util.Base64.getDecoder().decode(base64)
                     entry.optString("url", "").isNotEmpty() -> download(entry.optString("url"))
                     else -> continue
                 }
@@ -283,6 +288,9 @@ class ModelClient(private val settings: Settings) {
             画面中要出现的文字必须用引号原样写出并说明位置。
         """.trimIndent()
     }
+
+    /** Exposed so a test can prove the 10-second default was actually overridden. */
+    fun imageReadTimeoutSeconds(): Long = imageClient.readTimeoutMillis.toLong() / 1000
 
     data class ProbeResult(val ok: Boolean, val detail: String)
 

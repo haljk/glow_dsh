@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
@@ -24,6 +25,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -62,8 +64,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.abs
 
-private enum class CompareMode(val label: String) { SINGLE("单看"), SIDE("并排"), WIPE("滑动") }
+private enum class CompareMode(val label: String) {
+    /** One full-size image at a time, flipped by swipe or tap. Default on a phone. */
+    SWITCH("切换"),
+    SIDE("并排"),
+    WIPE("滑动"),
+    SINGLE("单看"),
+}
+
+/** Modes offered when a reference image exists; side-by-side is opt-in on a phone. */
+private val COMPARE_MODES = listOf(CompareMode.SWITCH, CompareMode.SIDE, CompareMode.WIPE)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -72,8 +84,11 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
     val resultFile = vm.fileOf(item)
     val refFile = vm.refFileOf(item, 0)
-    var mode by remember { mutableStateOf(if (refFile != null) CompareMode.SIDE else CompareMode.SINGLE) }
+    // On a 411dp-wide phone, side-by-side gives each image under 200dp — too small
+    // to judge detail, so switching is the default and the split views are optional.
+    var mode by remember { mutableStateOf(if (refFile != null) CompareMode.SWITCH else CompareMode.SINGLE) }
     var fraction by remember { mutableFloatStateOf(0.5f) }
+    var showReference by remember { mutableStateOf(false) }
 
     val requestWrite = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -115,10 +130,14 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
         },
         bottomBar = {
             Surface(color = Color(0xFF141317)) {
-                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Column(
+                    Modifier
+                        .navigationBarsPadding()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
                     if (refFile != null) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            CompareMode.entries.forEach { entry ->
+                            COMPARE_MODES.forEach { entry ->
                                 val selected = entry == mode
                                 TextButton(
                                     onClick = { mode = entry },
@@ -171,11 +190,18 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
                 .background(Color.Black),
         ) {
             when (mode) {
-                CompareMode.SINGLE -> ZoomableImage(resultFile)
+                CompareMode.SINGLE, CompareMode.SWITCH -> SwitchCompare(
+                    referenceFile = refFile,
+                    resultFile = resultFile,
+                    showReference = showReference,
+                    onToggle = { showReference = !showReference },
+                )
+
                 CompareMode.SIDE -> Row(Modifier.fillMaxSize()) {
                     LabeledPane("原图", refFile, Modifier.weight(1f))
                     LabeledPane("结果", resultFile, Modifier.weight(1f))
                 }
+
                 CompareMode.WIPE -> WipeCompare(
                     referenceFile = refFile,
                     resultFile = resultFile,
@@ -306,6 +332,87 @@ private fun DrawPane(bitmap: ImageBitmap?, label: String?, modifier: Modifier) {
             )
         }
     }
+}
+
+/**
+ * One full-size image at a time, flipped left/right.
+ *
+ * This is the default comparison on a phone: a split view would leave each image
+ * under 200dp wide, which is useless for judging whether a retouch kept the face.
+ * Pinch-zoom is only offered when there is no reference to switch to, so the two
+ * gestures never fight over the same drag.
+ */
+@Composable
+private fun SwitchCompare(
+    referenceFile: File?,
+    resultFile: File?,
+    showReference: Boolean,
+    onToggle: () -> Unit,
+) {
+    if (referenceFile == null) {
+        ZoomableImage(resultFile)
+        return
+    }
+    val bitmap = rememberFileBitmap(if (showReference) referenceFile else resultFile, targetPx = 2048)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                var travelled = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { travelled = 0f },
+                    onDragEnd = { if (abs(travelled) > 100f) onToggle() },
+                    onHorizontalDrag = { _, delta -> travelled += delta },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = if (showReference) "原图" else "结果",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit,
+            )
+        }
+        Row(
+            Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 10.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color.Black.copy(alpha = 0.5f))
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            SwitchPill("原图", showReference) { if (!showReference) onToggle() }
+            SwitchPill("结果", !showReference) { if (showReference) onToggle() }
+        }
+        Text(
+            "左右滑动切换原图与结果",
+            color = Color.White.copy(alpha = 0.8f),
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 14.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.Black.copy(alpha = 0.45f))
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+        )
+    }
+}
+
+@Composable
+private fun SwitchPill(label: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        label,
+        color = if (selected) Color.Black else Color.White,
+        style = MaterialTheme.typography.labelLarge,
+        modifier = Modifier
+            .clip(RoundedCornerShape(9.dp))
+            .background(if (selected) Color.White else Color.Transparent)
+            .clickable { onClick() }
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+    )
 }
 
 @Composable

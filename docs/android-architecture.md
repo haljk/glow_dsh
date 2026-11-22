@@ -68,6 +68,18 @@ OkHttpClient.Builder()
 - 加 `android:usesCleartextTraffic="true"`（服务地址由用户配置，无法预先列举域名）
 - 传输安全由 Tailscale 的 WireGuard 承担，与 DSH 版一致
 
+### 2.4 对比默认左右切换，而不是并排
+
+手机竖屏宽约 411dp，并排显示两张图时每张不到 200dp——看不出修图后脸有没有变。因此：
+
+- **默认「切换」**：一次一张全幅显示，左右滑动或点标签在「原图 / 结果」之间翻
+- 「并排」与「滑动」保留为可选，供想同时看两边的人使用
+- 切换模式下不叠加双指缩放，避免滑动手势与缩放抢同一个拖拽
+
+### 2.5 边到边适配不能省
+
+`targetSdk 36` 强制边到边，底部主按钮不加 `navigationBarsPadding()` 会被手势条压住一截，直接损失可点面积。工作台、查看器、设置页三处底栏都要留安全区。
+
 ---
 
 ## 3. 技术选型
@@ -176,9 +188,10 @@ app/src/main/java/dev/haljk/glow/
 | Android SDK | ✅ platform 36 / build-tools 36.0.0 / platform-tools 37.0.3（`C:\Android\Sdk`） |
 | Gradle | ✅ 9.1.0（`C:\gradle`，官方源下载不动，改用镜像） |
 | AGP / Kotlin | ✅ 9.0.1 / 2.3.20 |
-| 模拟器 | ⚠️ 已安装并建好 AVD `glow`，但 x86_64 需要虚拟化驱动，安装需管理员权限 |
-| 单测 | ✅ 26 个用例全绿（含 Robolectric 渲染的界面测试） |
-| APK | ✅ 已产出（12.14 MB） |
+| 模拟器 | ✅ AVD `glow`，AEHD 2.2 加速，Android 16 真机运行验证通过 |
+| 单测 | ✅ 44 个用例全绿（含 Robolectric 渲染的界面测试与 HTTP 契约测试） |
+| 真机验证 | ✅ 文生图 61.83 s、精修 412 s、后台存活、相册写盘、查看器切换 |
+| APK | ✅ 已产出（12.34 MB） |
 
 路径含中文会让 AGP 的测试工作进程读不到类路径，因此构建在
 `C:\glow-build\android` 的镜像副本上进行，由 `tools/build-android.ps1` 自动完成。

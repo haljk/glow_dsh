@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -166,7 +167,13 @@ private fun WorkbenchScreen(
         },
         bottomBar = {
             Surface(tonalElevation = 3.dp, shadowElevation = 8.dp) {
-                Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                // targetSdk 36 enforces edge-to-edge, so without this the primary
+                // button sits under the gesture bar and loses part of its touch area.
+                Column(
+                    Modifier
+                        .navigationBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                ) {
                     val blocked = vm.submitBlockedReason()
                     if (blocked != null && !busy) {
                         Text(

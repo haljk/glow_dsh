@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import dev.haljk.glow.MainActivity
 import dev.haljk.glow.R
@@ -59,14 +60,18 @@ class GenerationService : Service() {
             try {
                 runJob(request)
             } catch (error: ModelException) {
+                Log.w(TAG, "generation failed: ${error.message}", error)
                 JobRegistry.fail(error.message ?: "生成失败")
                 notifyFinal("生成失败", error.message ?: "生成失败")
             } catch (error: Exception) {
+                Log.w(TAG, "generation crashed: ${error.message}", error)
                 JobRegistry.fail(error.message ?: "生成失败")
                 notifyFinal("生成失败", error.message ?: "生成失败")
             } finally {
-                stopForeground(STOP_FOREGROUND_DETACH)
-                stopSelf(startId)
+                // REMOVE rather than DETACH: detaching leaves the ongoing notification
+                // behind and the system then reports "Stop FGS timeout".
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
             }
         }
         return START_NOT_STICKY
@@ -123,6 +128,7 @@ class GenerationService : Service() {
 
         JobRegistry.finish(produced)
         val verb = if (request.isEdit) "精修" else "生成"
+        Log.i(TAG, "generation done: $produced image(s) in ${(System.currentTimeMillis() - startedAt) / 1000}s")
         notifyFinal("${verb}完成", "已保存 $produced 张，回到阁楼查看")
     }
 
@@ -192,6 +198,7 @@ class GenerationService : Service() {
     }
 
     companion object {
+        private const val TAG = "Glow"
         private const val CHANNEL_ID = "glow_jobs"
         private const val NOTIFICATION_ID = 1001
         private const val FINAL_NOTIFICATION_ID = 1002

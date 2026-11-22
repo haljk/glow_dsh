@@ -92,6 +92,9 @@ dependencies {
   testImplementation(libs.androidx.compose.ui.test.junit4)
   debugImplementation(libs.androidx.compose.ui.test.manifest)
 
+  // The HTTP contract with the model services, exercised against a local server.
+  testImplementation(libs.mockwebserver)
+
   // Networking: the model services, with explicit long timeouts
   implementation(libs.okhttp)
 
