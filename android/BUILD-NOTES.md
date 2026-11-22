@@ -102,6 +102,17 @@ Defects found by this run, and fixed:
 Still unexercised on a device: 并排/滑动 comparison, 归档/删除/存到相册, and the
 multi-reference flow.
 
+## A Compose pitfall worth remembering
+
+`BoxWithConstraints` wrapped around a `LazyVerticalGrid` broke tap-to-focus for the
+`OutlinedTextField`s inside that grid: uiautomator reported `focused=false`, the IME
+never opened, and `mServedInputConnection` stayed null — while the identical field on
+the settings screen (a `Column` + `verticalScroll`) focused normally. It looked
+exactly like an emulator/IME fault; it was not.
+
+Breakpoints now come from `LocalConfiguration.current.screenHeightDp` instead. Note
+that the Robolectric focus test passes either way, so this one is only caught by
+driving the real app on a device.
 ## Auditing the interface without spending generations
 
 `tools/audit-android-ui.ps1` drives the app on a device and records a frame

@@ -150,7 +150,9 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
             }
             Column(Modifier.weight(1f).padding(start = 4.dp)) {
                 Text(
-                    item.note.ifBlank { item.displaySize },
+                    // Falling back to the pixel size put the same string on both
+                    // lines; when the user typed nothing, the date is more useful.
+                    item.note.ifBlank { relativeTime(item.createdAt) },
                     style = MaterialTheme.typography.titleMedium,
                     color = onChrome,
                     maxLines = 1,
@@ -163,7 +165,10 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
                     maxLines = 1,
                 )
             }
-            if (refFile != null) {
+            // Only the switch mode has a "which one am I looking at" question; in
+            // side-by-side and wipe both panes are on screen at once, so the pill
+            // did nothing there.
+            if (refFile != null && mode == CompareMode.SWITCH) {
                 Row(
                     Modifier
                         .clip(RoundedCornerShape(16.dp))
@@ -186,9 +191,20 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
                     onToggle = { showReference = !showReference },
                 )
 
-                CompareMode.SIDE -> Row(Modifier.fillMaxSize()) {
-                    LabeledPane("原图", refFile, Modifier.weight(1f))
-                    LabeledPane("结果", resultFile, Modifier.weight(1f))
+                CompareMode.SIDE -> Row(
+                    Modifier.fillMaxSize(),
+                    // Two nearly identical pictures butted together are unreadable:
+                    // the seam is what tells you there are two of them.
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    LabeledPane("原图", refFile, Modifier.weight(1f)) {
+                        showReference = true
+                        mode = CompareMode.SWITCH
+                    }
+                    LabeledPane("结果", resultFile, Modifier.weight(1f)) {
+                        showReference = false
+                        mode = CompareMode.SWITCH
+                    }
                 }
 
                 CompareMode.WIPE -> WipeCompare(
@@ -347,9 +363,19 @@ private fun RowScope.ViewAction(label: String, color: Color, onClick: () -> Unit
 
 
 @Composable
-private fun LabeledPane(label: String, file: File?, modifier: Modifier = Modifier) {
+private fun LabeledPane(
+    label: String,
+    file: File?,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit = {},
+) {
     val bitmap = rememberFileBitmap(file, targetPx = 1400)
-    Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    Box(
+        modifier
+            .fillMaxSize()
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
         if (bitmap != null) {
             Image(
                 bitmap = bitmap,
@@ -440,10 +466,10 @@ private fun WipeCompare(
                 }
             },
     ) {
-        DrawPane(result, "结果", Modifier.fillMaxSize())
+        DrawPane(result, "结果", Modifier.fillMaxSize(), Alignment.BottomEnd)
         DrawPane(
             bitmap = reference,
-            label = null,
+            label = "原图",
             modifier = Modifier
                 .fillMaxSize()
                 .drawWithContent {
@@ -451,6 +477,7 @@ private fun WipeCompare(
                         this@drawWithContent.drawContent()
                     }
                 },
+            labelSpot = Alignment.BottomStart,
         )
         Box(
             Modifier
@@ -463,7 +490,12 @@ private fun WipeCompare(
 }
 
 @Composable
-private fun DrawPane(bitmap: ImageBitmap?, label: String?, modifier: Modifier) {
+private fun DrawPane(
+    bitmap: ImageBitmap?,
+    label: String?,
+    modifier: Modifier,
+    labelSpot: Alignment = Alignment.TopEnd,
+) {
     Box(modifier, contentAlignment = Alignment.Center) {
         if (bitmap != null) {
             Image(
@@ -479,8 +511,8 @@ private fun DrawPane(bitmap: ImageBitmap?, label: String?, modifier: Modifier) {
                 color = MaterialTheme.glow.onScrim.copy(alpha = 0.85f),
                 style = MaterialTheme.typography.labelMedium,
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(8.dp)
+                    .align(labelSpot)
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(MaterialTheme.glow.scrim.copy(alpha = 0.5f))
                     .padding(horizontal = 8.dp, vertical = 3.dp),

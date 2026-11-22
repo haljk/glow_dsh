@@ -371,10 +371,14 @@ fun ChoiceChip(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
+    // Two lines when the label carries a ratio: "竖版人像 / 3:4". At 1.3x font a
+    // single line had to truncate to "竖版人像 …", which dropped the ratio — the
+    // one piece of information the chip exists to carry.
+    val parts = label.split(' ')
     val shape = RoundedCornerShape(10.dp)
     Box(
         modifier = modifier
-            .heightIn(min = 40.dp)
+            .heightIn(min = 44.dp)
             .clip(shape)
             .background(
                 if (selected) MaterialTheme.colorScheme.primaryContainer
@@ -386,19 +390,30 @@ fun ChoiceChip(
                 shape,
             )
             .clickable { onClick() }
-            .padding(horizontal = 10.dp),
+            .padding(horizontal = 8.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-        )
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                parts.first(),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                textAlign = TextAlign.Center,
+            )
+            if (parts.size > 1) {
+                Text(
+                    parts.drop(1).joinToString(" "),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                    maxLines = 1,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
     }
 }
 

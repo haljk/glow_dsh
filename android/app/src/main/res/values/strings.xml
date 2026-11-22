@@ -1,3 +1,5 @@
 <resources>
-    <string name="app_name">Glow</string>
+    <!-- The whole interface is Chinese; a launcher label in English was the last
+         place where the two names disagreed. -->
+    <string name="app_name">阁楼</string>
 </resources>

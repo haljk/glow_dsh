@@ -199,41 +199,58 @@ private fun WorkbenchScreen(
         },
         bottomBar = {
             Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 8.dp) {
-                Column(
-                    Modifier
-                        .imePadding()
-                        .navigationBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                ) {
-                    // A fixed slot: showing and hiding this line must not move the
-                    // button the thumb is already aiming at.
-                    Box(Modifier.fillMaxWidth().height(20.dp), contentAlignment = Alignment.CenterStart) {
-                        if (blocked != null && !busy) {
-                            Text(
-                                blocked,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
+                Column(Modifier.fillMaxWidth().imePadding()) {
+                    // Same hairline treatment as the top bar, so scrolled content
+                    // dissolves into the bar instead of being cut by it.
+                    HorizontalDivider(
+                        thickness = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+                    )
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+                        Column(
+                            Modifier
+                                .widthIn(max = ContentMaxWidth)
+                                .fillMaxWidth()
+                                .navigationBarsPadding()
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                        ) {
+                            // A fixed slot: showing and hiding this line must not move
+                            // the button the thumb is already aiming at.
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 20.dp),
+                                contentAlignment = Alignment.CenterStart,
+                            ) {
+                                if (blocked != null && !busy) {
+                                    Text(
+                                        blocked,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            PrimaryAction(
+                                label = when {
+                                    busy -> "正在生成"
+                                    vm.scenario == Scenario.TEXT -> "生成图片"
+                                    vm.scenario == Scenario.RETOUCH -> "开始精修"
+                                    else -> "开始合成"
+                                },
+                                enabled = blocked == null || busy,
+                                busy = busy,
+                                onClick = { if (!busy) vm.submit() },
                             )
                         }
                     }
-                    PrimaryAction(
-                        label = when {
-                            busy -> "正在生成"
-                            vm.scenario == Scenario.TEXT -> "生成图片"
-                            vm.scenario == Scenario.RETOUCH -> "开始精修"
-                            else -> "开始合成"
-                        },
-                        enabled = blocked == null || busy,
-                        busy = busy,
-                        onClick = { if (!busy) vm.submit() },
-                    )
                 }
             }
         },
     ) { padding ->
-        BoxWithConstraints(
+        Box(
             Modifier
                 .fillMaxSize()
                 .padding(padding),
@@ -241,7 +258,7 @@ private fun WorkbenchScreen(
         ) {
             // Landscape puts ~411dp of height on screen: the cards and the status
             // strip have to give some back or the input falls below the fold.
-            val compact = maxHeight < 520.dp
+            val compact = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp < 520
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
                 modifier = Modifier
