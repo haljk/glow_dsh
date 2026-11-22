@@ -102,6 +102,23 @@ Defects found by this run, and fixed:
 Still unexercised on a device: 并排/滑动 comparison, 归档/删除/存到相册, and the
 multi-reference flow.
 
+## Auditing the interface without spending generations
+
+`tools/audit-android-ui.ps1` drives the app on a device and records a frame
+sequence plus measurements (tappable sizes in dp, keyboard collision, landscape,
+1.3× font). It **does not submit a job by default**: that would call the real model
+service, and one edit is a multi-minute GPU run. The banner section is opt-in:
+
+```powershell
+./tools/audit-android-ui.ps1                       # no model calls
+./tools/audit-android-ui.ps1 -WithRealGeneration   # also captures 正在生成 states
+```
+
+The remaining traffic during an audit is the app's own `/health` probe on launch
+(two requests, about a second, no compute). Say so if even that should be cut —
+the alternative is pointing the app at an unreachable address, which makes the
+status strip read 未连接 and misrepresents the design.
+
 ## Backgrounding, activity destruction, screen lock and Doze
 
 Three different things can take the app away, and they need three different answers.

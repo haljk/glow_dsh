@@ -8,7 +8,11 @@
   Output: <out>\frames\*.png  and <out>\audit.md
 #>
 param(
-    [string]$Out = 'C:\glow-build\review2'
+    [string]$Out = 'C:\glow-build\review2',
+    # Off by default: submitting a job makes the app call the real model service,
+    # and a single edit there is a multi-minute GPU run. Only the banner states
+    # need it, and the rest of the audit does not.
+    [switch]$WithRealGeneration
 )
 
 $ErrorActionPreference = 'Continue'
@@ -181,38 +185,44 @@ if ($edit) {
 Say ''
 Say '## 5. 提交 → 横幅出现 → 排队/进行中状态'
 Say ''
-# Use text mode: it needs no photo picker, so the banner states are reachable
-# without driving the system picker.
-& $adb shell am force-stop $pkg 2>&1 | Out-Null
-& $adb shell am start -n "$pkg/.MainActivity" 2>&1 | Out-Null
-Start-Sleep -Seconds 6
-$u = Dump
-$d = [xml](Get-Content $u)
-$edit = $d.SelectNodes("//*[@class='android.widget.EditText']") | Select-Object -First 1
-if ($edit) {
-    $m = [regex]::Match($edit.bounds, '\[(\d+),(\d+)\]\[(\d+),(\d+)\]')
-    & $adb shell input tap ([int](([int]$m.Groups[1].Value + [int]$m.Groups[3].Value) / 2)) ([int](([int]$m.Groups[2].Value + [int]$m.Groups[4].Value) / 2)) 2>&1 | Out-Null
-    Start-Sleep -Seconds 1
-    & $adb shell input text 'a%ssmall%sbrass%slamp' 2>&1 | Out-Null
-    & $adb shell input keyevent 4 2>&1 | Out-Null
-    Start-Sleep -Seconds 1
+if (-not $WithRealGeneration) {
+    Say '本次**跳过**：提交会让 App 真的调用模型服务，默认不触发。'
+    Say '需要横幅类截图时，显式加 `-WithRealGeneration` 再跑。'
+    Shot 'before-submit'
+} else {
+    # Use text mode: it needs no photo picker, so the banner states are reachable
+    # without driving the system picker.
+    & $adb shell am force-stop $pkg 2>&1 | Out-Null
+    & $adb shell am start -n "$pkg/.MainActivity" 2>&1 | Out-Null
+    Start-Sleep -Seconds 6
+    $u = Dump
+    $d = [xml](Get-Content $u)
+    $edit = $d.SelectNodes("//*[@class='android.widget.EditText']") | Select-Object -First 1
+    if ($edit) {
+        $m = [regex]::Match($edit.bounds, '\[(\d+),(\d+)\]\[(\d+),(\d+)\]')
+        & $adb shell input tap ([int](([int]$m.Groups[1].Value + [int]$m.Groups[3].Value) / 2)) ([int](([int]$m.Groups[2].Value + [int]$m.Groups[4].Value) / 2)) 2>&1 | Out-Null
+        Start-Sleep -Seconds 1
+        & $adb shell input text 'a%ssmall%sbrass%slamp' 2>&1 | Out-Null
+        & $adb shell input keyevent 4 2>&1 | Out-Null
+        Start-Sleep -Seconds 1
+    }
+    Shot 'before-submit'
+    $u = Dump
+    TapText $u '生成图片' | Out-Null
+    Shot 'submit-immediate'
+    Start-Sleep -Seconds 3
+    Shot 'submit-3s'
+    $u = Dump
+    $t = Texts $u
+    Say ("提交后文字：{0}" -f (($t | Where-Object { $_ -match '正在|已等|完成|没有成功|先' }) -join ' ¦ '))
+    Start-Sleep -Seconds 8
+    $u = Dump
+    $t = Texts $u
+    Say ("10 秒后横幅：{0}" -f (($t | Where-Object { $_ -match '正在|已等' }) -join ' ¦ '))
+    Shot 'submit-10s'
+    Say ("横幅可点区域：见下表")
+    $totalSmall += AuditTouch $u '任务横幅'
 }
-Shot 'before-submit'
-$u = Dump
-TapText $u '生成图片' | Out-Null
-Shot 'submit-immediate'
-Start-Sleep -Seconds 3
-Shot 'submit-3s'
-$u = Dump
-$t = Texts $u
-Say ("提交后文字：{0}" -f (($t | Where-Object { $_ -match '正在|已等|完成|没有成功|先' }) -join ' ¦ '))
-Start-Sleep -Seconds 8
-$u = Dump
-$t = Texts $u
-Say ("10 秒后横幅：{0}" -f (($t | Where-Object { $_ -match '正在|已等' }) -join ' ¦ '))
-Shot 'submit-10s'
-Say ("横幅可点区域：见下表")
-$totalSmall += AuditTouch $u '任务横幅'
 
 # ---------------------------------------------------------------- 查看器
 Say ''
