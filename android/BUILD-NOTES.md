@@ -48,9 +48,39 @@ stays valid for anyone else cloning the repository.
 
 ## What "self-tested" means here
 
-1. **Unit tests** — `:app:testDebugUnitTest`. The 44 conformance vectors recorded
-   from the shipped desktop implementation must all match, plus invariant tests
-   (legal size edges, no preset freezing what it changes, reference numbering).
-2. **Build** — `:app:assembleDebug` produces an installable APK.
-3. **Device/emulator run** — install, launch, exercise the three scenarios, and
-   confirm a real generation against the model service.
+### Passed
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Conformance with the desktop implementation | `:app:testDebugUnitTest` | **7/7** — 17 instruction vectors, 24 size vectors, 3 reject vectors, 4 invariants |
+| Storage behaviour on a plain JVM | same | **10/10** — settings round-trip, favourites cap, archive/delete, sidecar |
+| Rendered interface on the JVM | same | **9/9** — Compose composed and measured by Robolectric; taps dispatched through the real input pipeline |
+| Build | `:app:assembleDebug` | APK 12.14 MB, `dev.haljk.glow`, minSdk 26, targetSdk 36 |
+| APK structure | `aapt2 dump badging/xmltree` | permissions, `usesCleartextTraffic`, `foregroundServiceType=dataSync`, service not exported |
+
+Total: **26 unit test cases, 0 failures.**
+
+The interface tests also dump the composed semantics tree to
+`app/build/ui-tree/*.txt`, which is the closest evidence to a screenshot on a
+machine without a hypervisor: every element actually on screen, in order.
+
+### Not yet verified: a run on a device or emulator
+
+The x86_64 emulator needs a hypervisor driver, and installing one requires
+administrator rights, which this session does not have. The driver package is
+already downloaded:
+
+```
+C:\Android\Sdk\extras\google\Android_Emulator_Hypervisor_Driver\silent_install.bat
+```
+
+Run that in an **administrator** command prompt, then:
+
+```powershell
+C:\Android\Sdk\emulator\emulator.exe -avd glow -gpu swiftshader_indirect
+./tools/build-android.ps1 -Install
+```
+
+Until then, the following remain unproven on real hardware: foreground-service
+survival across app switches, upload of a real photo, and a real generation
+against the model service.

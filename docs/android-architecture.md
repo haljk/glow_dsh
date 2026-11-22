@@ -173,17 +173,16 @@ app/src/main/java/dev/haljk/glow/
 | 项 | 状态 |
 | --- | --- |
 | JDK | ✅ Corretto 21.0.10 |
-| Android SDK | ❌ 未安装（无 `ANDROID_HOME`） |
-| adb / 模拟器 | ❌ 未安装 |
-| Gradle | ❌ 未安装（可用 wrapper，但首次需联网下载） |
+| Android SDK | ✅ platform 36 / build-tools 36.0.0 / platform-tools 37.0.3（`C:\Android\Sdk`） |
+| Gradle | ✅ 9.1.0（`C:\gradle`，官方源下载不动，改用镜像） |
+| AGP / Kotlin | ✅ 9.0.1 / 2.3.20 |
+| 模拟器 | ⚠️ 已安装并建好 AVD `glow`，但 x86_64 需要虚拟化驱动，安装需管理员权限 |
+| 单测 | ✅ 26 个用例全绿（含 Robolectric 渲染的界面测试） |
+| APK | ✅ 已产出（12.14 MB） |
 
-**当前无法构建 APK，也无法跑 Android 单测。** `core/` 的 JVM 单测需要 Gradle + Kotlin 编译器，同样依赖工具链。
-
-可选路径：
-
-1. **装命令行工具链**（推荐用于本机自动验证）：`cmdline-tools` + `platform-tools` + `build-tools` + `platform-34`，约 1.5 GB，之后可 `./gradlew assembleDebug` 与 `test`，能产出可安装 APK 并连真机。
-2. **装 Android Studio**：图省事，但体积更大（约 4 GB），适合后续人工调试。
-3. **只交付源码**：我在没有工具链的前提下写代码，无法编译、无法测试、无法验证——不推荐，等于把风险推给最后一刻。
+路径含中文会让 AGP 的测试工作进程读不到类路径，因此构建在
+`C:\glow-build\android` 的镜像副本上进行，由 `tools/build-android.ps1` 自动完成。
+细节见 [../android/BUILD-NOTES.md](../android/BUILD-NOTES.md)。
 
 ---
 

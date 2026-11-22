@@ -37,6 +37,13 @@ android {
       excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
   }
+
+  testOptions {
+    unitTests {
+      // Robolectric needs the merged resources to render Compose on the JVM.
+      isIncludeAndroidResources = true
+    }
+  }
 }
 
 kotlin {
@@ -77,6 +84,13 @@ dependencies {
   // A real org.json so the storage classes can be tested on a plain JVM; the
   // Android stub throws "not mocked" on every call.
   testImplementation(libs.org.json)
+
+  // Compose UI on the JVM: the emulator needs a hypervisor this machine lacks,
+  // so the interface is rendered and driven by Robolectric instead.
+  testImplementation(libs.robolectric)
+  testImplementation(platform(libs.androidx.compose.bom))
+  testImplementation(libs.androidx.compose.ui.test.junit4)
+  debugImplementation(libs.androidx.compose.ui.test.manifest)
 
   // Networking: the model services, with explicit long timeouts
   implementation(libs.okhttp)

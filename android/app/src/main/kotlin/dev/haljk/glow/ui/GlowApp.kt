@@ -51,6 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -194,7 +195,8 @@ private fun WorkbenchScreen(
             columns = GridCells.Fixed(2),
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                .testTag("workbench-list"),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -251,16 +253,31 @@ private fun WorkbenchScreen(
                     GlowCard {
                         SectionHeader(
                             title = "② 要做什么",
-                            hint = selectedPreset?.summary ?: "可以跳过，下面直接写要求",
+                            // Only when nothing is chosen: once a preset is active the
+                            // card below already states its name and summary.
+                            hint = if (selectedPreset == null) "可以跳过，下面直接写要求" else null,
                             action = if (selectedPreset == null) "选择" else "更换",
                             onAction = { showPresetSheet = true },
                         )
                         if (selectedPreset != null) {
                             val changes = Preserve.describeChanges(selectedPreset.mayChange)
+                            // The label must be visible: after the sheet closes, the
+                            // summary alone does not tell the user which preset is active.
+                            Text(
+                                "已选：${selectedPreset.label}",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                selectedPreset.summary,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                             Text(
                                 "会改动：" + changes.joinToString("、"),
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(top = 4.dp),
                             )
                             Text(
                                 selectedPreset.caution,
@@ -292,7 +309,9 @@ private fun WorkbenchScreen(
                     }
                     SectionHeader(
                         title = title,
-                        hint = hint,
+                        // The field's own placeholder carries the example, so repeating it
+                        // here would say the same thing twice.
+                        hint = null,
                         action = "帮我写",
                         onAction = { vm.sharpenPrompt { vm.prompt = it } },
                     )
