@@ -5,7 +5,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
+import org.json.JSONArray
+import org.json.JSONObject
 import dev.haljk.glow.core.Density
 import dev.haljk.glow.core.EditInstructionRequest
 import dev.haljk.glow.core.InstructionComposer
@@ -29,6 +32,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.properties.ReadWriteProperty
+import kotlin.reflect.KProperty
 
 /** The three paths through the app. */
 enum class Scenario(val title: String, val blurb: String) {
@@ -57,7 +62,10 @@ data class SizeChoice(val label: String, val width: Int, val height: Int) {
     val text: String get() = "${width}x$height"
 }
 
-class GlowViewModel(application: Application) : AndroidViewModel(application) {
+class GlowViewModel(
+    application: Application,
+    private val saved: SavedStateHandle = SavedStateHandle(),
+) : AndroidViewModel(application) {
 
     private val settingsStore = SettingsStore(application.filesDir)
     private val galleryStore = GalleryStore(File(application.filesDir, "gallery")).also { it.ensureDir() }
@@ -74,16 +82,22 @@ class GlowViewModel(application: Application) : AndroidViewModel(application) {
         private set
 
     // ---- workbench state
-    var scenario by mutableStateOf(Scenario.TEXT)
-    var prompt by mutableStateOf("")
-    var presetId by mutableStateOf<String?>(null)
-    var refs by mutableStateOf<List<RefSlot>>(emptyList())
+    //
+    // Every field here is backed by SavedStateHandle. Android destroys a
+    // backgrounded Activity while keeping the process (the foreground service is
+    // why), so a plain mutableStateOf loses the user's scenario, wording and
+    // picked photos while the job keeps running. That is a real defect seen on a
+    // device: the banner still counted up while the page had reset itself.
+    var scenario by savedValue(saved, KEY_SCENARIO, Scenario.TEXT)
+    var prompt by savedValue(saved, KEY_PROMPT, "")
+    var presetId by savedValue<String?>(saved, KEY_PRESET, null)
+    var refs by savedRefs(saved)
         private set
-    var density by mutableStateOf(Density.NORMAL)
-    var sizeChoiceIndex by mutableStateOf(0)
-    var autoSize by mutableStateOf(true)
-    var seedText by mutableStateOf("")
-    var batchCount by mutableStateOf(1)
+    var density by savedValue(saved, KEY_DENSITY, Density.NORMAL)
+    var sizeChoiceIndex by savedValue(saved, KEY_SIZE_INDEX, 0)
+    var autoSize by savedValue(saved, KEY_AUTO_SIZE, true)
+    var seedText by savedValue(saved, KEY_SEED, "")
+    var batchCount by savedValue(saved, KEY_BATCH, 1)
 
     // ---- gallery
     var activeItems by mutableStateOf<List<GalleryItem>>(emptyList())
@@ -100,7 +114,12 @@ class GlowViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var message by mutableStateOf<String?>(null)
         private set
-    var submitting by mutableStateOf(false)
+
+    /**
+     * Read from the process-scoped registry rather than remembered locally: after
+     * an Activity recreation a local flag would say "idle" while a job was running.
+     */
+    var submitting by mutableStateOf(JobRegistry.current.value?.status == JobRegistry.Status.RUNNING)
         private set
 
     /** Which image the viewer is showing, if any. */
@@ -389,5 +408,81 @@ class GlowViewModel(application: Application) : AndroidViewModel(application) {
 
     fun consumeMessage() {
         message = null
+    }
+
+    // ------------------------------------------------------------- persistence
+
+    /** Backs a field with SavedStateHandle so Activity recreation cannot lose it. */
+    private fun <T> savedValue(
+        handle: SavedStateHandle,
+        key: String,
+        initial: T,
+    ): ReadWriteProperty<Any?, T> = object : ReadWriteProperty<Any?, T> {
+        private val state = mutableStateOf(handle.get<T>(key) ?: initial)
+        override fun getValue(thisRef: Any?, property: KProperty<*>): T = state.value
+        override fun setValue(thisRef: Any?, property: KProperty<*>, value: T) {
+            state.value = value
+            handle[key] = value
+        }
+    }
+
+    /**
+     * Reference images need a converter: the bundle can hold primitives and
+     * Serializable values, and a list of slots is neither. The URIs may stop being
+     * readable if the process died, which the picker path already reports.
+     */
+    private fun savedRefs(handle: SavedStateHandle): ReadWriteProperty<Any?, List<RefSlot>> =
+        object : ReadWriteProperty<Any?, List<RefSlot>> {
+            private val state = mutableStateOf(decodeRefs(handle.get<String>(KEY_REFS)))
+            override fun getValue(thisRef: Any?, property: KProperty<*>): List<RefSlot> = state.value
+            override fun setValue(thisRef: Any?, property: KProperty<*>, value: List<RefSlot>) {
+                state.value = value
+                handle[KEY_REFS] = encodeRefs(value)
+            }
+        }
+
+    private fun encodeRefs(slots: List<RefSlot>): String = JSONArray().apply {
+        slots.forEach { slot ->
+            put(
+                JSONObject().apply {
+                    put("uri", slot.uri)
+                    put("role", slot.role.id)
+                    put("w", slot.width)
+                    put("h", slot.height)
+                },
+            )
+        }
+    }.toString()
+
+    private fun decodeRefs(raw: String?): List<RefSlot> = runCatching {
+        if (raw.isNullOrBlank()) return emptyList()
+        val array = JSONArray(raw)
+        buildList {
+            for (index in 0 until array.length()) {
+                val entry = array.optJSONObject(index) ?: continue
+                val uri = entry.optString("uri", "")
+                if (uri.isEmpty()) continue
+                add(
+                    RefSlot(
+                        uri = uri,
+                        role = Role.fromId(entry.optString("role", Role.SUBJECT.id)),
+                        width = entry.optInt("w", 0),
+                        height = entry.optInt("h", 0),
+                    ),
+                )
+            }
+        }
+    }.getOrElse { emptyList() }
+
+    companion object {
+        private const val KEY_SCENARIO = "scenario"
+        private const val KEY_PROMPT = "prompt"
+        private const val KEY_PRESET = "presetId"
+        private const val KEY_REFS = "refs"
+        private const val KEY_DENSITY = "density"
+        private const val KEY_SIZE_INDEX = "sizeChoiceIndex"
+        private const val KEY_AUTO_SIZE = "autoSize"
+        private const val KEY_SEED = "seedText"
+        private const val KEY_BATCH = "batchCount"
     }
 }

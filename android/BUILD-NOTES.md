@@ -101,3 +101,47 @@ Defects found by this run, and fixed:
 
 Still unexercised on a device: 并排/滑动 comparison, 归档/删除/存到相册, and the
 multi-reference flow.
+
+## Backgrounding, activity destruction, screen lock and Doze
+
+Three different things can take the app away, and they need three different answers.
+
+**1. The user switches apps.** The foreground service keeps the process and the
+HTTP call alive. Verified: a 1024² job finished normally after 75 s in the
+background.
+
+**2. Android destroys the Activity but keeps the process.** This is what a device
+actually did: the job banner kept counting up while the page had reset to the
+default tab, because `JobRegistry` is process-scoped but the `ViewModel` is not.
+Every workbench field is now backed by `SavedStateHandle`, `submitting` is derived
+from the registry rather than remembered, and the services are re-probed on
+`ON_RESUME`.
+
+Reproduce and verify with:
+
+```powershell
+adb shell settings put global always_finish_activities 1
+```
+
+With that on, a retouch setup (scenario, preset, typed wording) survives
+backgrounding and returns intact; the connections come back as 已连接.
+
+**3. The screen locks and the device enters Doze.** A foreground service keeps the
+process, but Doze restricts the network and Wi-Fi power save can stall an open
+socket — a five-minute generation that never returns. The service now holds a
+partial wake lock and a `WIFI_MODE_FULL_HIGH_PERF` Wi-Fi lock for the length of the
+job and releases both when it ends.
+
+Verified with forced deep idle, which is harsher than a real screen lock:
+
+```powershell
+adb shell dumpsys deviceidle force-idle
+```
+
+| Condition | Result |
+| --- | --- |
+| App excluded from battery optimisation + screen off + forced deep Doze | finished in **70.33 s**, result and completion notification present |
+| Battery optimisation **not** excluded + screen off + forced deep Doze | also finished; `WifiLockManager` shows the lock held then released |
+
+So the locks — not the battery-optimisation exemption — are what makes this hold.
+The exemption is still worth having, but the app no longer depends on it.

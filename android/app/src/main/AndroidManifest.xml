@@ -9,6 +9,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Holds the CPU and Wi-Fi awake while a generation is in flight, so a screen
+         lock cannot stall the socket. Released as soon as the job ends. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Saving a result to the gallery needs this only before Android 10. -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"

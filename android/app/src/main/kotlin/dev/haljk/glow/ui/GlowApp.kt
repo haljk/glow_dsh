@@ -149,11 +149,19 @@ private fun WorkbenchScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             StatusDot(
                                 ok = vm.imageProbe?.ok,
-                                label = if (vm.imageProbe?.ok == true) "出图已连接" else "出图未连接",
+                                label = when {
+                                    vm.probing && vm.imageProbe == null -> "出图检查中…"
+                                    vm.imageProbe?.ok == true -> "出图已连接"
+                                    else -> "出图未连接"
+                                },
                             )
                             StatusDot(
                                 ok = vm.llmProbe?.ok,
-                                label = if (vm.llmProbe?.ok == true) "助手已连接" else "助手未连接",
+                                label = when {
+                                    vm.probing && vm.llmProbe == null -> "助手检查中…"
+                                    vm.llmProbe?.ok == true -> "助手已连接"
+                                    else -> "助手未连接"
+                                },
                             )
                         }
                     }
