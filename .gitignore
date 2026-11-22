@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Local runtime state — service addresses and personal prompts live here,
+# never in the repository
+.glow/
+settings.json
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.log
+*.swp

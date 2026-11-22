@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Glow",
+    "description": "A personal image studio: one line of text to an image, photo retouching through nine presets that lock down everything you did not ask to change, and multi-reference composition by role. Generations queue in the Host, so switching pages, reloading or minimising never loses a result; results can be enlarged, compared with their source, and archived out of the way.",
+    "detail": "docs/DETAIL.md"
+  }
+}

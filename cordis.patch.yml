@@ -1,0 +1,3 @@
+- insert:
+    - id: glow
+      name: '@local/glow'
