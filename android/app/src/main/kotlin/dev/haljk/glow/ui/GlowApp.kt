@@ -45,6 +45,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -173,18 +174,26 @@ private fun WorkbenchScreen(
         contentWindowInsets = WindowInsets.safeDrawing,
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
-                TopAppBar(
-                    modifier = Modifier.widthIn(max = ContentMaxWidth),
-                    title = { Text("阁楼", style = MaterialTheme.typography.headlineSmall) },
-                    actions = {
-                        TextButton(onClick = onOpenSettings, modifier = Modifier.heightIn(min = 48.dp)) {
-                            Text("设置")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background,
-                    ),
+            Column(Modifier.fillMaxWidth()) {
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+                    TopAppBar(
+                        modifier = Modifier.widthIn(max = ContentMaxWidth),
+                        title = { Text("阁楼", style = MaterialTheme.typography.headlineSmall) },
+                        actions = {
+                            TextButton(onClick = onOpenSettings, modifier = Modifier.heightIn(min = 48.dp)) {
+                                Text("设置")
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background,
+                        ),
+                    )
+                }
+                // The grid scrolls underneath the bar; without a hairline the cut
+                // reads as a rendering fault rather than as a boundary.
+                HorizontalDivider(
+                    thickness = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
                 )
             }
         },
@@ -737,13 +746,19 @@ private fun ArchiveScreen(vm: GlowViewModel, snackbar: SnackbarHostState, onBack
         contentWindowInsets = WindowInsets.safeDrawing,
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
-            TopAppBar(
-                title = { Text("归档箱（${vm.archivedCount}）", style = MaterialTheme.typography.headlineSmall) },
-                navigationIcon = { BackIcon(onBack) },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                ),
-            )
+            Column(Modifier.fillMaxWidth()) {
+                TopAppBar(
+                    title = { Text("归档箱（${vm.archivedCount}）", style = MaterialTheme.typography.headlineSmall) },
+                    navigationIcon = { BackIcon(onBack) },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background,
+                    ),
+                )
+                HorizontalDivider(
+                    thickness = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+                )
+            }
         },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {

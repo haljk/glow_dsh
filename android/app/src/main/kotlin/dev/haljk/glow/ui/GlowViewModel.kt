@@ -128,13 +128,13 @@ class GlowViewModel(
     val presets get() = Presets.ALL
 
     val sizeChoices = listOf(
-        SizeChoice("方形 · 1024²", 1024, 1024),
-        SizeChoice("竖版人像 · 3:4", 896, 1216),
-        SizeChoice("手机壁纸 · 9:16", 864, 1536),
-        SizeChoice("电脑壁纸 · 16:9", 1536, 864),
-        SizeChoice("横版照片 · 4:3", 1216, 896),
-        SizeChoice("超清横版 · 16:9", 2048, 1152),
-        SizeChoice("小图试手 · 512²", 512, 512),
+        SizeChoice("方形 1024", 1024, 1024),
+        SizeChoice("竖版人像 3:4", 896, 1216),
+        SizeChoice("手机壁纸 9:16", 864, 1536),
+        SizeChoice("电脑壁纸 16:9", 1536, 864),
+        SizeChoice("横版照片 4:3", 1216, 896),
+        SizeChoice("超清横版 16:9", 2048, 1152),
+        SizeChoice("小图试手 512", 512, 512),
     )
 
     val maxRefs: Int get() = if (scenario == Scenario.RETOUCH) 2 else 5
