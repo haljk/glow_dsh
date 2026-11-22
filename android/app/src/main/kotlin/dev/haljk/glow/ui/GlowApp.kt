@@ -574,8 +574,10 @@ private fun SizeFlow(vm: GlowViewModel) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 row.forEachIndexed { offset, choice ->
                     val index = vm.sizeChoices.indexOf(choice)
+                    val parts = choice.label.split(' ')
                     ChoiceChip(
-                        label = choice.label,
+                        label = parts.first(),
+                        secondLine = parts.drop(1).joinToString(" ").ifBlank { null },
                         selected = index == vm.sizeChoiceIndex,
                         modifier = Modifier.weight(1f),
                         onClick = { vm.sizeChoiceIndex = index },

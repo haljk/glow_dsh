@@ -64,11 +64,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import dev.haljk.glow.data.GalleryItem
@@ -447,6 +451,10 @@ private fun SwitchCompare(
  * The reference is drawn on top of the result and clipped to the left of the
  * divider with `clipRect`, so both images keep the same scale and position —
  * without that, each side would re-fit and the comparison would be meaningless.
+ *
+ * Width comes from `onSizeChanged` rather than `BoxWithConstraints`: wrapping
+ * content in a subcomposition stopped touch handling from working elsewhere in
+ * this app, and the drag gesture lives right here.
  */
 @Composable
 private fun WipeCompare(
@@ -457,12 +465,26 @@ private fun WipeCompare(
 ) {
     val reference = rememberFileBitmap(referenceFile, targetPx = 1800)
     val result = rememberFileBitmap(resultFile, targetPx = 1800)
-    BoxWithConstraints(
+    var widthPx by remember { mutableIntStateOf(0) }
+    val density = LocalDensity.current
+    Box(
         Modifier
             .fillMaxSize()
+            .onSizeChanged { widthPx = it.width }
+            // Tap to place the divider, drag to sweep it. The tap path matters on a
+            // phone: a 2dp handle is not a target, and the whole area is.
             .pointerInput(Unit) {
-                detectHorizontalDragGestures { change, _ ->
-                    onFractionChange((change.position.x / size.width.toFloat()).coerceIn(0.02f, 0.98f))
+                awaitPointerEventScope {
+                    while (true) {
+                        val down = awaitPointerEvent()
+                        val change = down.changes.firstOrNull() ?: continue
+                        if (
+                            (down.type == PointerEventType.Press || down.type == PointerEventType.Move) &&
+                            widthPx > 0
+                        ) {
+                            onFractionChange((change.position.x / widthPx).coerceIn(0.02f, 0.98f))
+                        }
+                    }
                 }
             },
     ) {
@@ -479,13 +501,15 @@ private fun WipeCompare(
                 },
             labelSpot = Alignment.BottomStart,
         )
-        Box(
-            Modifier
-                .offset(x = (maxWidth * fraction) - 1.dp)
-                .width(2.dp)
-                .fillMaxSize()
-                .background(MaterialTheme.glow.onScrim.copy(alpha = 0.9f)),
-        )
+        if (widthPx > 0) {
+            Box(
+                Modifier
+                    .offset(x = with(density) { (widthPx * fraction).toDp() } - 1.dp)
+                    .width(2.dp)
+                    .fillMaxSize()
+                    .background(MaterialTheme.glow.onScrim.copy(alpha = 0.9f)),
+            )
+        }
     }
 }
 

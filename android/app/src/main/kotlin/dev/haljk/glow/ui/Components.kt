@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -369,15 +370,16 @@ fun ChoiceChip(
     label: String,
     selected: Boolean,
     modifier: Modifier = Modifier,
+    secondLine: String? = null,
     onClick: () -> Unit,
 ) {
-    // Two lines when the label carries a ratio: "竖版人像 / 3:4". At 1.3x font a
-    // single line had to truncate to "竖版人像 …", which dropped the ratio — the
-    // one piece of information the chip exists to carry.
-    val parts = label.split(' ')
+    // Splitting the label on a space inside this component was wrong: it also cut
+    // "1 张" into "1" / "张" and collapsed the target to 27dp wide. The extra line
+    // is now opt-in per call site, and there is a floor on the width either way.
     val shape = RoundedCornerShape(10.dp)
     Box(
         modifier = modifier
+            .widthIn(min = 52.dp)
             .heightIn(min = 44.dp)
             .clip(shape)
             .background(
@@ -395,7 +397,7 @@ fun ChoiceChip(
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                parts.first(),
+                label,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                 color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
@@ -403,9 +405,9 @@ fun ChoiceChip(
                 maxLines = 1,
                 textAlign = TextAlign.Center,
             )
-            if (parts.size > 1) {
+            if (secondLine != null) {
                 Text(
-                    parts.drop(1).joinToString(" "),
+                    secondLine,
                     style = MaterialTheme.typography.labelMedium,
                     color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                     else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),

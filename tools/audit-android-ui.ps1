@@ -287,12 +287,21 @@ $u = Dump
 $d = [xml](Get-Content $u)
 # Tiles carry the result's own note as their description, so a fixed description
 # cannot find them; tap the first tile by geometry instead.
-$anchor = $d.SelectNodes("//*[@text[starts-with(.,'以前做的')]]") | Select-Object -First 1
-if ($anchor) {
-    $m = [regex]::Match($anchor.bounds, '\[(\d+),(\d+)\]\[(\d+),(\d+)\]')
-    $tapY = [int]$m.Groups[4].Value + 280
-    & $adb shell input tap 270 $tapY 2>&1 | Out-Null
+# Tiles are the only clickable nodes that are both wide and tall inside the grid.
+# A pixel offset from the section header broke as soon as the gallery grew.
+$tiles = @()
+foreach ($n in $d.SelectNodes("//*[@clickable='true']")) {
+    $mm = [regex]::Match($n.bounds, '\[(\d+),(\d+)\]\[(\d+),(\d+)\]')
+    if (-not $mm.Success) { continue }
+    $x1 = [int]$mm.Groups[1].Value; $y1 = [int]$mm.Groups[2].Value
+    $x2 = [int]$mm.Groups[3].Value; $y2 = [int]$mm.Groups[4].Value
+    $w = $x2 - $x1; $h = $y2 - $y1
+    if ($h -ge 350 -and $w -ge 250 -and $w -le 700) {
+        $tiles += [pscustomobject]@{ cx = $x1 + [int]($w / 2); cy = $y1 + [int]($h / 2); top = $y1 }
+    }
 }
+$tile = $tiles | Sort-Object top | Select-Object -First 1
+if ($tile) { & $adb shell input tap $tile.cx $tile.cy 2>&1 | Out-Null }
 Shot 'viewer-opening'
 Start-Sleep -Seconds 3
 Shot 'viewer-result'
@@ -308,7 +317,7 @@ Start-Sleep -Seconds 2
 Shot 'viewer-back'
 $u = Dump
 $t = Texts $u
-Say ("返回后是否回到工作台：{0}" -f $(if ($t -contains '以前做的（4）' -or ($t | Where-Object { $_ -like '以前做的*' })) { '是' } else { "**否**：$($t | Select-Object -First 6 -join ' ')" }))
+Say ("返回后是否回到工作台：{0}" -f $(if (($t | Where-Object { $_ -like '以前做的*' }) -or ($t -contains '生成图片') -or ($t -contains '写一句描述')) { '是' } else { "**否**：$($t | Select-Object -First 6 -join ' ')" }))
 
 # ---------------------------------------------------------------- 设置
 Say ''
@@ -327,9 +336,13 @@ Start-Sleep -Seconds 2
 Say ''
 Say '## 8. 极端条件：横屏 / 大字号'
 Say ''
+# Come back to the app first: earlier sections may have left the launcher on screen.
+& $adb shell am force-stop $pkg 2>&1 | Out-Null
+& $adb shell am start -n "$pkg/.MainActivity" 2>&1 | Out-Null
+Start-Sleep -Seconds 7
 & $adb shell settings put system accelerometer_rotation 0 2>&1 | Out-Null
 & $adb shell settings put system user_rotation 1 2>&1 | Out-Null
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 4
 Shot 'landscape'
 $u = Dump
 $t = Texts $u
