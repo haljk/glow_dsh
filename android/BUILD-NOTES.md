@@ -102,40 +102,46 @@ Defects found by this run, and fixed:
 Still unexercised on a device: 并排/滑动 comparison, 归档/删除/存到相册, and the
 multi-reference flow.
 
-## A Compose pitfall worth remembering
-
-`BoxWithConstraints` wrapped around a `LazyVerticalGrid` broke tap-to-focus for the
-`OutlinedTextField`s inside that grid: uiautomator reported `focused=false`, the IME
-never opened, and `mServedInputConnection` stayed null — while the identical field on
-the settings screen (a `Column` + `verticalScroll`) focused normally. It looked
-exactly like an emulator/IME fault; it was not.
-
-Breakpoints now come from `LocalConfiguration.current.screenHeightDp` instead. Note
-that the Robolectric focus test passes either way, so this one is only caught by
-driving the real app on a device.
-## Things only a device catches
+## Three things that pass every unit test and still fail on a device
 
 Robolectric renders the composition and drives semantics, but it does not run the
-real focus, IME and notification pipeline. These three escaped every unit test:
+real focus, IME or notification pipeline. All three of these were green in tests
+and broken in the hand. They are listed first on purpose: if you touch focus,
+notifications or icons, read this before trusting a green run.
 
-1. **`BoxWithConstraints` around a `LazyVerticalGrid` killed tap-to-focus** for the
-   text fields inside it (`focused=false`, no IME, `mServedInputConnection=null`).
-   The identical field on the settings screen focused fine. Robust in Robolectric
-   either way. Breakpoints now come from `LocalConfiguration.current`.
-2. **A silent notification channel gets no status-bar icon.** `IMPORTANCE_LOW`
-   keeps a foreground job out of the status bar, and channel importance survives
-   `pm clear` and app updates — only a new channel id changes it, which is why the
-   channel is now `glow_jobs_v2` with sound and vibration switched off explicitly.
-3. **Gallery tiles cannot be found by a pixel offset.** The audit script used to
-   tap "section header + 280dp"; adding one saved image moved every tile and the
-   script silently photographed the wrong screen. It now locates a tile by size.
-4. **A stroked vector renders nothing as a status-bar icon.** `ic_stat_glow` was
-   drawn with `strokeColor`, which looks right in the notification panel but leaves
-   the status-bar slot completely empty: small icons are alpha masks, and at 18dp a
-   2-unit stroke is one pixel of antialiasing. It has to be a filled silhouette —
-   the window is punched out with `fillType="evenOdd"`. Measure it by counting dark
-   columns in the status bar: 0 before, 36 after.
+**1. `BoxWithConstraints` around a `LazyVerticalGrid` kills tap-to-focus.**
+The `OutlinedTextField`s inside the grid stopped taking focus entirely — the field
+looked normal, taps did nothing, `focused=false`, the IME never opened and
+`mServedInputConnection` stayed null. The identical field on the settings screen (a
+`Column` + `verticalScroll`) focused fine. Breakpoints now come from
+`LocalConfiguration.current.screenHeightDp`. Verify by dumping and reading the
+node's `focused` attribute, not by looking at the screenshot.
 
+**2. Channel importance cannot be changed after install.**
+The system keeps a notification channel across `pm clear` *and* app updates, so
+`getNotificationChannel(id) != null` means a new importance never applies. Changing
+it requires a new channel id: this is why the channel is `glow_jobs_v2`, with sound
+and vibration switched off explicitly instead of by lowering importance, and why v1
+is deleted on first run.
+
+**3. A stroked vector draws nothing as a status-bar icon.**
+`ic_stat_glow` was roof and window drawn with `strokeColor`. It renders correctly in
+the notification panel and leaves the status-bar slot completely empty: small icons
+are alpha masks, and at 18dp a 2-unit stroke is one pixel of antialiasing. Small
+icons have to be filled silhouettes — the window is punched out with
+`fillType="evenOdd"`. The measurement is reusable: count dark columns in the status
+bar between x=230 and 860 with a notification alive. Stroked icon: 0. Filled icon:
+36. Give the notification a second before capturing; at 5s the shot can beat the
+notification and read 0 either way.
+
+## One tooling trap, same shape
+
+**Gallery tiles cannot be found by a pixel offset.** The audit script used to tap
+"section header + 280dp"; adding one saved image moved every tile and the script
+silently photographed the wrong screen. It now locates a tile by its size. The same
+class of bug made a stale `uiautomator dump` send a tap meant for the prompt field
+onto the settings button, which is why every dump is now written to a fresh path
+after deleting the remote file.
 ## Auditing the interface without spending generations
 
 `tools/audit-android-ui.ps1` drives the app on a device and records a frame
