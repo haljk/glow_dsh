@@ -4,7 +4,7 @@
 截图目录：`C:\glow-build\review7\`（`frames\` 是自动化审计的逐帧序列，`audit.md` 是测量报告）。
 
 - 安装包：`glow\dist\glow-debug.apk`
-- 单元测试：51 例全绿（`./tools/build-android.ps1 -Test`）
+- 单元测试：54 例全绿（`./tools/build-android.ps1 -Test`）
 - 真机口径：1080×2400 @ 420dpi（411×914dp），Android 16 / API 36
 
 ## 产品规则一致性
@@ -38,8 +38,8 @@
 | 19 | 提示出现/消失时按钮不跳动 | 通过 | `40` 与 `26` 按钮顶边同位 |
 | 20 | 运行中横幅与卡片 ≥1.2:1，计时等宽 | 通过 | `50-banner-running.png`；`59-ticker-strip.png` 三帧 4→9→14 秒 |
 | 21 | 横幅与按钮状态词一致，≥60 秒显示分秒 | 通过 | `50`（横幅与按钮同为"正在生成"）；`ElapsedLabelTest` 覆盖 60/65/432 秒 |
-| 22 | 预设分组且可滚动 | 通过 | `audit2` 帧 08 |
-| 23 | 设置页分组、技术串收进"高级" | 通过 | `16-settings.png`、`25-settings-final.png` |
+| 22 | 预设分组且可滚动 | 通过 | `frames/08-sheet-open.png` |
+| 23 | 设置页分组、技术串收进"高级" | 通过 | `63-settings.png` |
 | 24 | 硬编码色值只在 theme 内 | 通过 | 机检：`Color(0x` 0 处、`Color.White/Black` 0 处 |
 | 25 | 返回统一为图标、触达 ≥48dp | 通过 | 三处均 `ArrowBack`，48×48 |
 
@@ -64,18 +64,20 @@
 
 ## 两个只在真机才现形的坑（已修，留档）
 
-- **通知渠道重要性改不了**：系统侧渠道在 `pm clear` 与 App 升级后都保留，只有换 id 才生效。
-  所以渠道从 `glow_jobs` 迁到 `glow_jobs_v2`（DEFAULT + 显式关声音与振动），并删除旧渠道。
-  `IMPORTANCE_LOW` 的静默通知在状态栏不占位，一个跑几分钟的任务在后台会像没在跑。
-- **矢量小图标不能用描边**：`ic_stat_glow` 最初是 `strokeColor` 画屋顶与窗框，面板里看正常，
-  状态栏那一格却完全没有像素——18dp 下两单位描边只剩一像素抗锯齿，alpha 太弱。
-  小图标是 alpha 蒙版，必须实心：改成填充剪影、用 `evenOdd` 把窗口挖空后立即显示。
-  判据用「状态栏 x=230..860 区间的暗像素列数」：描边版 0 列，实心版 36 列。
+- **通知渠道重要性改不了。** 系统侧的渠道在 `pm clear` 与 App 升级后都保留，只有换 id 才生效。
+  渠道因此从 `glow_jobs` 迁到 `glow_jobs_v2`（DEFAULT + 显式关声音与振动），并删除旧渠道；
+  效果是通知从「Silent」分组里移出来，成为一条正常的进行中通知。
+- **状态栏那一格另有原因，不是渠道，是图标。** `ic_stat_glow` 最初用 `strokeColor` 画屋顶与
+  窗框，通知面板里看正常，状态栏却一个像素都没有：小图标是 alpha 蒙版，18dp 下两单位描边
+  只剩一像素抗锯齿。改成填充剪影、用 `evenOdd` 把窗口挖空后立即出现。
+  判据：状态栏 `x=230..860` 区间的暗像素列数，描边版 **0** 列，实心版 **36** 列。
+
+  注意：**不要**去把渠道调成 `IMPORTANCE_MIN` 试图修这一条——那是隐藏状态栏图标，方向相反。
 
 ## 复现方式
 
 ```powershell
-./tools/build-android.ps1 -Test          # 构建 + 51 个单测
+./tools/build-android.ps1 -Test          # 构建 + 54 个单测
 ./tools/audit-android-ui.ps1             # 真机逐帧审计（默认不调用模型服务）
 ./tools/audit-android-ui.ps1 -WithRealGeneration   # 需要横幅类截图时才加
 ```
