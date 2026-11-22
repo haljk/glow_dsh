@@ -2,6 +2,7 @@ package dev.haljk.glow.ui
 
 import android.Manifest
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -81,6 +82,9 @@ fun GlowApp(vm: GlowViewModel) {
 
     val viewing = vm.viewing
     if (viewing != null) {
+        // Without this, system Back finishes the Activity instead of closing the
+        // viewer — the user lands on the launcher and loses their place.
+        BackHandler { vm.viewing = null }
         ViewerScreen(vm = vm, item = viewing, onClose = { vm.viewing = null })
         return
     }
@@ -93,16 +97,22 @@ fun GlowApp(vm: GlowViewModel) {
             onOpenArchive = { screen = RootScreen.ARCHIVE },
         )
 
-        RootScreen.ARCHIVE -> ArchiveScreen(
-            vm = vm,
-            snackbar = snackbar,
-            onBack = { screen = RootScreen.WORKBENCH },
-        )
+        RootScreen.ARCHIVE -> {
+            BackHandler { screen = RootScreen.WORKBENCH }
+            ArchiveScreen(
+                vm = vm,
+                snackbar = snackbar,
+                onBack = { screen = RootScreen.WORKBENCH },
+            )
+        }
 
-        RootScreen.SETTINGS -> SettingsScreen(
-            vm = vm,
-            onBack = { screen = RootScreen.WORKBENCH },
-        )
+        RootScreen.SETTINGS -> {
+            BackHandler { screen = RootScreen.WORKBENCH }
+            SettingsScreen(
+                vm = vm,
+                onBack = { screen = RootScreen.WORKBENCH },
+            )
+        }
     }
 }
 
