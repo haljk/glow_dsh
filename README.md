@@ -61,6 +61,7 @@
 
 ## 文档
 
+- [docs/PRODUCT-DESIGN.md](docs/PRODUCT-DESIGN.md) — 产品设计文档：定位、场景、信息架构、能力边界、架构与决策依据（中文）
 - [docs/DETAIL.md](docs/DETAIL.md) — 插件详情与用户说明（中文）
 - [docs/image-service-reference.md](docs/image-service-reference.md) — 被测出来的服务契约：哪些参数是真的、哪些被静默忽略、耗时规律，以及为什么会掐断长任务（English）
 
