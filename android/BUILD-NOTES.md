@@ -129,10 +129,18 @@ is deleted on first run.
 the notification panel and leaves the status-bar slot completely empty: small icons
 are alpha masks, and at 18dp a 2-unit stroke is one pixel of antialiasing. Small
 icons have to be filled silhouettes — the window is punched out with
-`fillType="evenOdd"`. The measurement is reusable: count dark columns in the status
-bar between x=230 and 860 with a notification alive. Stroked icon: 0. Filled icon:
-36. Give the notification a second before capturing; at 5s the shot can beat the
-notification and read 0 either way.
+`fillType="evenOdd"`.
+
+Measure it by finding the glyph, not by a fixed window: with the notification alive,
+look for a ~22px solid mark between the clock and the next notification icon (on a
+1080-wide bar that is x≈193..214). Stroked build: nothing there, and the following
+icon starts immediately at 186. Filled build: the mark appears and the following
+icon shifts right to 244.
+
+Two ways this measurement lies: a window with a fixed left edge (`x >= 230`) excludes
+the glyph you want and frames the neighbour that just moved right, which produced a
+convincing but meaningless "0 -> 36"; and a screenshot taken five seconds into a job
+can beat the notification and read empty with a working icon.
 
 ## One tooling trap, same shape
 
