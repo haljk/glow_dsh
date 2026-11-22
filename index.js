@@ -109,8 +109,29 @@ const ROLES = [
   { id: 'detail', label: '局部细节' },
 ]
 
+/**
+ * The subject sentence protects the same things the preset may not change, so
+ * it takes `mayChange` too — otherwise "keep the expression" would sit right
+ * next to a preset whose job is to change the expression.
+ */
+const SUBJECT_ITEMS = [
+  ['identity', '身份、面部特征与五官比例'],
+  ['skin', '肤色'],
+  ['hair', '发型'],
+  ['expression', '表情'],
+  ['pose', '姿态'],
+  ['camera', '镜头角度'],
+]
+
+function buildSubjectSentence(n, mayChange) {
+  const skip = new Set(Array.isArray(mayChange) ? mayChange : [])
+  const kept = SUBJECT_ITEMS.filter(([id]) => !skip.has(id)).map(([, label]) => label)
+  if (kept.length === 0) return `以 <Picture ${n}> 为主体`
+  return `以 <Picture ${n}> 为主体，完整保留其${kept.join('、')}`
+}
+
 const ROLE_SENTENCE = {
-  subject: (n) => `以 <Picture ${n}> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、表情、姿态与镜头角度`,
+  subject: buildSubjectSentence,
   background: (n) => `把背景替换为 <Picture ${n}> 中的场景`,
   outfit: (n) => `把人物服装替换为 <Picture ${n}> 中的服装，保留版型、材质与褶皱`,
   style: (n) => `画面色调、光线质感与整体画风参考 <Picture ${n}>`,
@@ -118,9 +139,47 @@ const ROLE_SENTENCE = {
   detail: (n) => `局部细节参考 <Picture ${n}>`,
 }
 
-/** Every edit keeps the untouched parts locked down; this is the core of the retouch presets. */
-const PRESERVE_TAIL =
-  '除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、发型、姿态与手部、服装其余部分、镜头角度与焦段、光照方向与强度、画面清晰度与噪点、整体色调；不增加也不删除任何物体，不改变画面构图与整体风格'
+/**
+ * Aspects an edit protects by default. A preset declares which of them it is
+ * allowed to change (`mayChange`), and the protection sentence is generated
+ * from the remainder — a blanket "lighting stays the same" would otherwise
+ * contradict a preset whose whole job is to change the light.
+ */
+const PRESERVE_ITEMS = [
+  ['identity', '人物身份与面部特征'],
+  ['skin', '肤色与体型'],
+  ['expression', '表情与视线'],
+  ['hair', '发型'],
+  ['pose', '姿态与手部'],
+  ['outfit', '服装其余部分'],
+  ['camera', '镜头角度与焦段'],
+  ['lighting', '光照方向与强度'],
+  ['sharpness', '画面清晰度与噪点'],
+  ['palette', '整体色调'],
+  ['background', '背景内容'],
+  ['composition', '主体在画面中的位置与构图'],
+]
+
+const PRESERVE_OBJECTS_ID = 'objects'
+const PRESERVE_OBJECTS_TEXT = '不增加也不删除任何物体'
+
+function buildPreserveClause(mayChange) {
+  const skip = new Set(Array.isArray(mayChange) ? mayChange : [])
+  const kept = PRESERVE_ITEMS.filter(([id]) => !skip.has(id)).map(([, label]) => label)
+  const clauses = []
+  if (kept.length > 0) clauses.push(`其他一切保持不变：${kept.join('、')}`)
+  if (!skip.has(PRESERVE_OBJECTS_ID)) clauses.push(PRESERVE_OBJECTS_TEXT)
+  if (clauses.length === 0) return ''
+  return `除上述明确指定的改动之外，${clauses.join('；')}`
+}
+
+/** Human labels for what a preset is allowed to change, for the panel. */
+function describeChanges(mayChange) {
+  const skip = new Set(Array.isArray(mayChange) ? mayChange : [])
+  const labels = PRESERVE_ITEMS.filter(([id]) => skip.has(id)).map(([, label]) => label)
+  if (skip.has(PRESERVE_OBJECTS_ID)) labels.push('画面中的物体')
+  return labels
+}
 
 /**
  * Scenario presets. A non-technical user cannot reliably hand-write the
@@ -138,6 +197,9 @@ const PRESETS = [
     needs: ['subject'],
     optional: ['background'],
     instruction: '把人物从原背景中干净地分离出来，放到新的背景里',
+    // A new background brings its own light and colour, so those are excluded
+    // from the frozen list instead of fighting the instruction.
+    mayChange: ['background', 'lighting', 'palette'],
     caution: '复杂发丝边缘可能出现毛边；用 1024² 及以上出图更稳。可以再选一张图当新背景，也可以直接用一句话描述新背景。',
   },
   {
@@ -148,6 +210,7 @@ const PRESETS = [
     needs: ['subject'],
     optional: ['outfit'],
     instruction: '把人物身上的服装替换掉，其余部分不动',
+    mayChange: ['outfit'],
     caution: '描述衣服时写清颜色、版型、材质，比说"好看一点"可靠得多。',
   },
   {
@@ -157,6 +220,7 @@ const PRESETS = [
     scene: 'retouch',
     needs: ['subject'],
     instruction: '改变人物的发型与发色，脸部与身体其余部分完全不动',
+    mayChange: ['hair'],
     caution: '发型大幅改变（如长发变短发）时，模型可能连带微调脸型。',
   },
   {
@@ -166,6 +230,7 @@ const PRESETS = [
     scene: 'retouch',
     needs: ['subject'],
     instruction: '只调整人物的表情，五官形状、身份特征与姿态保持不变',
+    mayChange: ['expression'],
     caution: '表情改动越大，越可能被误读成换脸，建议幅度小一些。',
   },
   {
@@ -175,6 +240,8 @@ const PRESETS = [
     scene: 'retouch',
     needs: ['subject'],
     instruction: '只改变整体光线方向、色温与时段氛围，构图与所有物体位置不变',
+    // This preset exists to change the light — freezing it would contradict it.
+    mayChange: ['lighting', 'palette'],
     caution: '阴影方向要跟着新光源走，否则会显得假。',
   },
   {
@@ -184,6 +251,7 @@ const PRESETS = [
     scene: 'retouch',
     needs: ['subject'],
     instruction: '移除画面中多余的路人、杂物与干扰元素，用合理的背景自然补上',
+    mayChange: ['objects', 'background'],
     caution: '被移走物体后面原本被挡住的内容是模型猜的，复杂处可能不自然。',
   },
   {
@@ -193,6 +261,7 @@ const PRESETS = [
     scene: 'retouch',
     needs: ['subject'],
     instruction: '把背景完整移除，换成干净的纯色背景',
+    mayChange: ['background'],
     caution: '半透明物体（玻璃、纱）与细发丝是难点，建议出图后放大检查边缘。',
   },
   {
@@ -202,6 +271,7 @@ const PRESETS = [
     scene: 'retouch',
     needs: ['subject'],
     instruction: '修复照片的老化痕迹：去除噪点与划痕，提升清晰度与细节，但人物长相、神态与年代感必须保留',
+    mayChange: ['sharpness'],
     caution: '过度修复会让脸变得"塑料感"，建议一次只做一档。',
   },
   {
@@ -211,6 +281,7 @@ const PRESETS = [
     scene: 'retouch',
     needs: ['subject'],
     instruction: '处理成证件照样式：纯色背景、正面端正、光线均匀、五官清晰无遮挡',
+    mayChange: ['background', 'lighting', 'sharpness'],
     caution: '只做视觉处理，不等同于任何官方证件照规格，正式用途请按具体要求另拍。',
   },
 ]
@@ -803,12 +874,17 @@ export function apply(ctx, config) {
     const parts = []
     if (preset) parts.push(preset.instruction)
     roles.forEach((role, index) => {
-      parts.push(ROLE_SENTENCE[role](index + 1))
+      parts.push(ROLE_SENTENCE[role](index + 1, preset ? preset.mayChange : []))
     })
     if (note) parts.push(`另外，${note}`)
 
     const touchesSubject = roles.includes('subject')
-    if (preset || touchesSubject) parts.push(PRESERVE_TAIL)
+    if (preset || touchesSubject) {
+      // The freeze list is derived from the preset, so it never contradicts the
+      // instruction above it.
+      const clause = buildPreserveClause(preset ? preset.mayChange : [])
+      if (clause) parts.push(clause)
+    }
 
     return {
       prompt: parts.join('；') + '。',
@@ -1255,8 +1331,9 @@ export function apply(ctx, config) {
       }
       if (sub === 'presets') {
         sendJson(res, 200, {
-          presets: PRESETS.map(({ id, label, summary, needs, optional, caution, scene }) => ({
+          presets: PRESETS.map(({ id, label, summary, needs, optional, caution, scene, mayChange }) => ({
             id, label, summary, needs: needs || [], optional: optional || [], caution: caution || '', scene,
+            changes: describeChanges(mayChange),
           })),
           roles: ROLES,
           limits: IMAGE_LIMITS,

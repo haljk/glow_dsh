@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "license": "MIT",
   "description": "Glow / 阁楼 — a personal image studio for DSH: text-to-image, preset-driven photo retouching, multi-reference composition, background job queueing and LLM-written prompts, all against local model services.",
   "repository": {
     "type": "git",

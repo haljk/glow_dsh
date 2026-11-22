@@ -1362,13 +1362,16 @@ window.__ModuleLoader__.load({
                       'div',
                       { className: 'mw-note' },
                       h('div', null, h('b', null, selectedPreset.label), '：' + selectedPreset.summary),
+                      Array.isArray(selectedPreset.changes) && selectedPreset.changes.length > 0
+                        ? h('div', { style: { marginTop: 4 } }, '会改动：' + selectedPreset.changes.join('、'))
+                        : null,
                       selectedPreset.caution
                         ? h('div', { style: { marginTop: 4 } }, selectedPreset.caution)
                         : null,
                       h(
                         'div',
                         { style: { marginTop: 4 } },
-                        '会尽量只改你指定的部分；但这是靠提示词约束，不是蒙版重绘，脸型仍可能轻微变化。',
+                        '其余部分会逐项写进「保持不变」清单——清单跟着这个预设走，不会自相矛盾。但这是提示词约束，不是蒙版重绘，脸型仍可能轻微变化。',
                       ),
                     )
                   : h('div', { className: 'mw-hint' }, '选了预设，系统会自动写好「只改这里、其余尽量不动」的说明。'),

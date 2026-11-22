@@ -57,4 +57,14 @@
 
 设置存在 `~/.glow/settings.json`，**不进仓库**。也可以在插件行里用 `config` 预置同样的字段（`imageBaseUrl`、`llmBaseUrl`、`llmModel`、`outputDir`、`imageTimeoutMs`、`llmTimeoutMs`），面板里的改动优先。
 
-服务端契约以 `MiniMax-H3-Image` 的 OpenAI 风格接口为准（`/v1/images/generations`、`/v1/images/edits`）。参数边界与实测数据见 [docs/DETAIL.md](docs/DETAIL.md)。
+服务端契约以 `MiniMax-H3-Image` 的 OpenAI 风格接口为准（`/v1/images/generations`、`/v1/images/edits`）。
+
+## 文档
+
+- [docs/DETAIL.md](docs/DETAIL.md) — 插件详情与用户说明（中文）
+- [docs/image-service-reference.md](docs/image-service-reference.md) — 被测出来的服务契约：哪些参数是真的、哪些被静默忽略、耗时规律，以及为什么会掐断长任务（English）
+
+## License
+
+[MIT](LICENSE)
+
