@@ -45,9 +45,9 @@ class WorkbenchUiTest {
     @Test
     fun `the three scenarios are offered on the first screen`() {
         launch()
-        compose.onNodeWithText("写一句话出图").assertIsDisplayed()
-        compose.onNodeWithText("拿一张照片精修").assertIsDisplayed()
-        compose.onNodeWithText("多张图合在一起").assertIsDisplayed()
+        compose.onNodeWithText("一句话出图").assertIsDisplayed()
+        compose.onNodeWithText("照片精修").assertIsDisplayed()
+        compose.onNodeWithText("多图合成").assertIsDisplayed()
     }
 
     @Test
@@ -62,7 +62,7 @@ class WorkbenchUiTest {
     @Test
     fun `switching to retouch asks for a photo`() {
         launch()
-        compose.onNodeWithText("拿一张照片精修").performClick()
+        compose.onNodeWithText("照片精修").performClick()
         compose.waitForIdle()
 
         compose.onNodeWithText("① 选一张照片").assertIsDisplayed()
@@ -73,7 +73,7 @@ class WorkbenchUiTest {
     @Test
     fun `retouch offers the presets and states what each one changes`() {
         val vm = launch()
-        compose.onNodeWithText("拿一张照片精修").performClick()
+        compose.onNodeWithText("照片精修").performClick()
         compose.waitForIdle()
 
         vm.presetId = "light-change"

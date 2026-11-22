@@ -72,6 +72,8 @@ dependencies {
   implementation(libs.androidx.compose.ui)
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.compose.material3)
+  // ArrowBack / Close for navigation; the extended icon pack is not needed
+  implementation(libs.androidx.compose.material.icons.core)
   // Tooling
   debugImplementation(libs.androidx.compose.ui.tooling)
   // Instrumented tests

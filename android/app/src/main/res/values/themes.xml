@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Glow" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- DayNight by resource qualifier, not AppCompat: this is a pure-Compose app
+         on ComponentActivity, so there is no AppCompat theme to inherit from.
+         windowBackground is the brand purple so a cold start never flashes white
+         in either mode. -->
+    <style name="Theme.Glow" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/splash_background</item>
+    </style>
 </resources>

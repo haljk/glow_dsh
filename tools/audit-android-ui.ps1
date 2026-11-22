@@ -35,11 +35,20 @@ function Shot([string]$label) {
     Write-Host "  frame $name"
 }
 
+# Delete the remote dump before writing a new one. Without this, a failed dump
+# silently leaves the previous file in place and the pull returns a stale screen —
+# which once sent a tap meant for the prompt field onto the settings button and
+# looked like a hit-testing bug.
 function Dump() {
-    $p = "$env:TEMP\d$([guid]::NewGuid().ToString('N').Substring(0,5)).xml"
-    & $adb shell uiautomator dump /sdcard/d.xml 2>&1 | Out-Null
-    & $adb pull /sdcard/d.xml $p 2>&1 | Out-Null
-    return $p
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $p = "$env:TEMP\d$([guid]::NewGuid().ToString('N').Substring(0,5)).xml"
+        & $adb shell rm -f /sdcard/d.xml 2>&1 | Out-Null
+        & $adb shell uiautomator dump /sdcard/d.xml 2>&1 | Out-Null
+        & $adb pull /sdcard/d.xml $p 2>&1 | Out-Null
+        if ((Test-Path $p) -and ((Get-Item $p).Length -gt 200)) { return $p }
+        Start-Sleep -Milliseconds 700
+    }
+    throw 'uiautomator dump keeps failing'
 }
 
 function TapText($xml, $text) {
@@ -65,27 +74,55 @@ function TapDesc($xml, $desc) {
 }
 
 # Every tappable node, measured in dp. Anything under 48 dp is reported.
+# A node that extends past its parent is clipped by the viewport, not small — the
+# first version of this audit confidently reported an 18.7dp "target" that was
+# really the archive button half scrolled out of view.
 function AuditTouch($xml, $label) {
     [xml]$d = Get-Content $xml
     Say ""
     Say "### 可点区域测量 · $label"
     Say ""
-    Say '| 元素（文字/描述） | 宽×高 (dp) | 是否 ≥48dp |'
+    Say '| 元素（文字/描述） | 宽×高 (dp) | 是否 ≥44dp |'
     Say '| --- | --- | --- |'
     $small = 0
+    $clipped = @()
     foreach ($n in $d.SelectNodes("//*[@clickable='true']")) {
         $m = [regex]::Match($n.bounds, '\[(\d+),(\d+)\]\[(\d+),(\d+)\]')
         if (-not $m.Success) { continue }
+        $top = [int]$m.Groups[2].Value
+        $bottom = [int]$m.Groups[4].Value
         $w = (& $dp ([int]$m.Groups[3].Value - [int]$m.Groups[1].Value))
-        $h = (& $dp ([int]$m.Groups[4].Value - [int]$m.Groups[2].Value))
+        $h = (& $dp ($bottom - $top))
+
+        # Clipped against the parent's box? Android reports the *clipped* bounds, so
+        # a node half scrolled out of view shows a small height while touching the
+        # parent's edge. Only a node that is BOTH short and edge-touching is treated
+        # as clipped — otherwise normal full-size nodes get excused by mistake.
+        $parent = $n.ParentNode
+        $pm = if ($parent) { [regex]::Match($parent.bounds, '\[(\d+),(\d+)\]\[(\d+),(\d+)\]') } else { $null }
+        $isClipped = $false
+        if ($pm -and $pm.Success -and $h -lt 44) {
+            $pTop = [int]$pm.Groups[2].Value
+            $pBottom = [int]$pm.Groups[4].Value
+            if ($top -le $pTop + 2 -or $bottom -ge $pBottom - 2) { $isClipped = $true }
+        }
+
         $name = ''
         if ($n.text) { $name = $n.text } elseif ($n.'content-desc') { $name = $n.'content-desc' } else { $name = "($($n.class))" }
+        if ($isClipped) {
+            $clipped += "$name ${w}×${h}"
+            Say ("| {0} | {1}×{2} | 被视口裁切，不计 |" -f ($name -replace '\|', '/'), $w, $h)
+            continue
+        }
         $ok = ($h -ge 44)
         if (-not $ok) { $small++ }
         Say ("| {0} | {1}×{2} | {3} |" -f ($name -replace '\|', '/'), $w, $h, $(if ($ok) { '是' } else { '**否**' }))
     }
     Say ""
     Say "  低于 44dp 高的可点区域：$small 个"
+    if ($clipped.Count -gt 0) {
+        Say ("  被视口裁切（需滚动才能点全）：{0} 个 — {1}" -f $clipped.Count, ($clipped -join '；'))
+    }
     return $small
 }
 
@@ -123,14 +160,14 @@ Say ''
 Say '## 2. 场景切换（点一下之后立刻与稳定后）'
 Say ''
 $u = Dump
-TapText $u '拿一张照片精修' | Out-Null
+TapText $u '照片精修' | Out-Null
 Shot 'tab-retouch-immediately'
 Start-Sleep -Seconds 2
 Shot 'tab-retouch-settled'
 $u = Dump
 $totalSmall += AuditTouch $u '精修场景'
 $u = Dump
-TapText $u '多张图合在一起' | Out-Null
+TapText $u '多图合成' | Out-Null
 Start-Sleep -Seconds 2
 Shot 'tab-combine-settled'
 $u = Dump
@@ -142,7 +179,7 @@ Say ''
 Say '## 3. 底部弹层（打开 / 稳定 / 关闭）'
 Say ''
 $u = Dump
-TapText $u '拿一张照片精修' | Out-Null
+TapText $u '照片精修' | Out-Null
 Start-Sleep -Seconds 2
 $u = Dump
 TapText $u '选择' | Out-Null
@@ -161,7 +198,18 @@ Shot 'preset-applied'
 Say ''
 Say '## 4. 输入框聚焦 + 键盘弹出（是否遮挡主按钮）'
 Say ''
+# Self-contained: relaunch and drive text mode explicitly. The app restores its last
+# scenario from SavedStateHandle, so "whatever state it wakes up in" is not stable
+# enough to script against.
+& $adb shell am force-stop $pkg 2>&1 | Out-Null
+& $adb shell am start -n "$pkg/.MainActivity" 2>&1 | Out-Null
+Start-Sleep -Seconds 6
 $u = Dump
+TapText $u '一句话出图' | Out-Null
+Start-Sleep -Seconds 2
+$u = Dump
+$t = Texts $u
+Say ("文生图界面就位：{0}" -f $(if ($t -contains '写一句描述') { '是' } else { "**否**：$($t -join ' ')" }))
 $d = [xml](Get-Content $u)
 $edit = $d.SelectNodes("//*[@class='android.widget.EditText']") | Select-Object -First 1
 if ($edit) {
@@ -173,9 +221,9 @@ if ($edit) {
     Shot 'keyboard-open'
     $u = Dump
     $t = Texts $u
-    Say ("键盘弹出时仍在屏幕上的文字：{0}" -f (($t | Select-Object -First 12) -join ' ¦ '))
+    Say ("键盘弹出时仍在屏幕上的文字：{0}" -f (($t | Select-Object -First 10) -join ' ¦ '))
     $d = [xml](Get-Content $u)
-    $btn = $d.SelectNodes("//*[@text='开始精修']") | Select-Object -First 1
+    $btn = $d.SelectNodes("//*[@text='生成图片']") | Select-Object -First 1
     Say ("主按钮是否仍可见：{0}" -f $(if ($btn) { "是 $($btn.bounds)" } else { '**否，被键盘挤掉**' }))
     & $adb shell input keyevent 4 2>&1 | Out-Null
     Start-Sleep -Seconds 1

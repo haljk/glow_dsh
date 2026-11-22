@@ -1,14 +1,18 @@
 package dev.haljk.glow.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -39,30 +43,40 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.Image
 import dev.haljk.glow.core.Density
 import dev.haljk.glow.data.GalleryItem
 import dev.haljk.glow.data.JobRegistry
+import dev.haljk.glow.ui.theme.glow
 import kotlinx.coroutines.delay
-import java.util.Locale
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 
+/**
+ * The one card surface.
+ *
+ * A hairline, not tonal elevation: at 1–3 dp the tonal mix is about 2% of the
+ * primary colour, which measured as a 1.02:1 difference against the page and read
+ * as no layer at all.
+ */
 @Composable
 fun GlowCard(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
-    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
 ) {
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(16.dp)
     Surface(
         modifier = modifier
             .fillMaxWidth()
             .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
         shape = shape,
         color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp,
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Column(Modifier.padding(14.dp), content = content)
     }
@@ -79,7 +93,7 @@ fun SectionHeader(
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(top = 4.dp, bottom = 8.dp),
+            .padding(bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
@@ -100,17 +114,28 @@ fun SectionHeader(
     }
 }
 
-/** The three paths. Big touch targets: this is the first and most common choice. */
+/**
+ * The three paths.
+ *
+ * Copy is kept to four characters so it never breaks mid-word, and the row is
+ * sized to its tallest child so all three cards share one baseline at any font
+ * scale. Selection is colour plus a border only — bolding the selected title made
+ * a 14 sp card title heavier than the 17 sp section title above it.
+ */
 @Composable
-fun ScenarioRow(current: Scenario, onPick: (Scenario) -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+fun ScenarioRow(current: Scenario, compact: Boolean = false, onPick: (Scenario) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().height(IntrinsicSize.Max),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         Scenario.entries.forEach { entry ->
             val selected = entry == current
-            val shape = RoundedCornerShape(16.dp)
+            val shape = RoundedCornerShape(14.dp)
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .heightIn(min = 96.dp)
+                    .fillMaxHeight()
+                    .heightIn(min = if (compact) 74.dp else 92.dp)
                     .clip(shape)
                     .background(
                         if (selected) MaterialTheme.colorScheme.primaryContainer
@@ -119,33 +144,41 @@ fun ScenarioRow(current: Scenario, onPick: (Scenario) -> Unit) {
                     .border(
                         width = if (selected) 2.dp else 1.dp,
                         color = if (selected) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+                        else MaterialTheme.colorScheme.outlineVariant,
                         shape = shape,
                     )
                     .clickable { onPick(entry) }
-                    .padding(horizontal = 10.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                    .padding(horizontal = 10.dp, vertical = 11.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {
                 Text(
                     entry.title,
                     style = MaterialTheme.typography.labelLarge,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                     color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
                     else MaterialTheme.colorScheme.onSurface,
-                    lineHeight = 20.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     entry.blurb,
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    lineHeight = 17.sp,
+                    color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
     }
 }
 
-/** Bottom-anchored primary action: reachable with a thumb on a phone. */
+/**
+ * Bottom-anchored primary action.
+ *
+ * It is genuinely disabled when the form is incomplete, instead of always looking
+ * ready and answering with a toast: the biggest shape on the page claiming to be
+ * pressable is a promise the app should keep.
+ */
 @Composable
 fun PrimaryAction(
     label: String,
@@ -155,46 +188,53 @@ fun PrimaryAction(
 ) {
     Button(
         onClick = onClick,
-        enabled = enabled && !busy,
+        enabled = enabled,
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 56.dp),
-        shape = RoundedCornerShape(16.dp),
+            .heightIn(min = 54.dp),
+        shape = RoundedCornerShape(14.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.primary,
-            contentColor = MaterialTheme.colorScheme.onPrimary,
+            containerColor = if (busy) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.primary,
+            contentColor = if (busy) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onPrimary,
+            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         ),
     ) {
         if (busy) {
             CircularProgressIndicator(
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.size(18.dp),
                 strokeWidth = 2.dp,
-                color = MaterialTheme.colorScheme.onPrimary,
+                color = MaterialTheme.colorScheme.primary,
             )
             Spacer(Modifier.width(10.dp))
         }
-        Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+        Text(label, style = MaterialTheme.typography.titleLarge)
     }
 }
 
 @Composable
 fun StatusDot(ok: Boolean?, label: String) {
     val color = when (ok) {
-        true -> Color(0xFF34A853)
+        true -> MaterialTheme.glow.success
         false -> MaterialTheme.colorScheme.error
         null -> MaterialTheme.colorScheme.outline
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(8.dp).clip(CircleShape).background(color))
+        Box(Modifier.size(7.dp).clip(CircleShape).background(color))
         Spacer(Modifier.width(6.dp))
         Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
+/**
+ * Job banner.
+ *
+ * It carries the only sense of a process this app has: still running, how long,
+ * safe to walk away, and a way out. The clock needs its own ticker because a
+ * composition does not re-run on wall time.
+ */
 @Composable
-fun JobBanner(snapshot: JobRegistry.Snapshot, onDismiss: () -> Unit) {
-    // A composition does not re-run on a clock, so the elapsed counter needs its
-    // own ticker; without it the banner sits on "正在提交…" for the whole run.
+fun JobBanner(snapshot: JobRegistry.Snapshot, onDismiss: () -> Unit, onGiveUp: () -> Unit) {
     var now by remember(snapshot.id, snapshot.status) { mutableStateOf(System.currentTimeMillis()) }
     if (snapshot.status == JobRegistry.Status.RUNNING) {
         LaunchedEffect(snapshot.id) {
@@ -204,48 +244,67 @@ fun JobBanner(snapshot: JobRegistry.Snapshot, onDismiss: () -> Unit) {
             }
         }
     }
-    val elapsed = ((now - snapshot.startedAt) / 1000).coerceAtLeast(0)
-    val finished = snapshot.status != JobRegistry.Status.RUNNING
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = when (snapshot.status) {
-            JobRegistry.Status.FAILED -> MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
-            JobRegistry.Status.DONE -> MaterialTheme.colorScheme.primaryContainer
-            else -> MaterialTheme.colorScheme.secondaryContainer
-        },
-    ) {
-        Row(
-            Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                val title = when (snapshot.status) {
-                    JobRegistry.Status.RUNNING -> if (elapsed < 8) "正在提交…" else "正在生成 · 已等 ${elapsed} 秒"
-                    JobRegistry.Status.DONE -> "完成，已保存 ${snapshot.produced} 张"
-                    JobRegistry.Status.FAILED -> "没有成功"
-                }
-                Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                if (snapshot.status == JobRegistry.Status.RUNNING) {
+    val elapsedSeconds = ((now - snapshot.startedAt) / 1000).coerceAtLeast(0)
+    val running = snapshot.status == JobRegistry.Status.RUNNING
+
+    val container = when (snapshot.status) {
+        JobRegistry.Status.FAILED -> MaterialTheme.colorScheme.errorContainer
+        JobRegistry.Status.DONE -> MaterialTheme.colorScheme.primaryContainer
+        else -> MaterialTheme.colorScheme.primaryContainer
+    }
+    val accent = when (snapshot.status) {
+        JobRegistry.Status.FAILED -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.primary
+    }
+
+    Surface(shape = RoundedCornerShape(14.dp), color = container, modifier = Modifier.fillMaxWidth()) {
+        Row(Modifier.height(IntrinsicSize.Min)) {
+            Box(Modifier.width(4.dp).fillMaxHeight().background(accent))
+            Row(
+                Modifier.padding(start = 12.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
                     Text(
-                        "可以切走做别的，不会中断",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        text = when (snapshot.status) {
+                            JobRegistry.Status.RUNNING -> "正在生成"
+                            JobRegistry.Status.DONE -> "完成，已保存 ${snapshot.produced} 张"
+                            JobRegistry.Status.FAILED -> "这次没成功"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
                     )
-                } else if (snapshot.message.isNotBlank()) {
-                    Text(
-                        snapshot.message,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    if (running) {
+                        Text(
+                            "已等 " + elapsedLabel(elapsedSeconds),
+                            // Tabular figures: without them the number reflows every
+                            // second and the whole banner twitches.
+                            style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
+                            fontWeight = FontWeight.Normal,
+                        )
+                        Text(
+                            "可以切走做别的，不会中断",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else if (snapshot.message.isNotBlank()) {
+                        Text(
+                            snapshot.message,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-            }
-            if (snapshot.status == JobRegistry.Status.RUNNING) {
-                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-            } else if (finished) {
-                TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 44.dp)) { Text("知道了") }
+                if (running) {
+                    TextButton(onClick = onGiveUp, modifier = Modifier.heightIn(min = 44.dp)) {
+                        Text("不再等", style = MaterialTheme.typography.labelMedium)
+                    }
+                } else {
+                    TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 44.dp)) {
+                        Text("知道了", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
             }
         }
     }
@@ -259,7 +318,9 @@ fun GalleryTile(item: GalleryItem, file: java.io.File?, onOpen: () -> Unit) {
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(if (item.ratio > 0.4f) 1f else 0.72f)
-                .clip(RoundedCornerShape(14.dp))
+                .clip(RoundedCornerShape(12.dp))
+                // Same shape and colour whether or not the bitmap has arrived: a
+                // "载入中" label next to loaded images reads as a broken file.
                 .background(MaterialTheme.colorScheme.surfaceVariant),
         ) {
             if (bitmap != null) {
@@ -269,26 +330,23 @@ fun GalleryTile(item: GalleryItem, file: java.io.File?, onOpen: () -> Unit) {
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                 )
-            } else {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("载入中", style = MaterialTheme.typography.labelMedium)
-                }
             }
         }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            item.displaySize,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         if (item.note.isNotBlank()) {
+            Spacer(Modifier.height(5.dp))
             Text(
                 item.note,
                 style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
+        Text(
+            relativeTime(item.createdAt),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+        )
     }
 }
 
@@ -313,10 +371,10 @@ fun ChoiceChip(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(12.dp)
+    val shape = RoundedCornerShape(10.dp)
     Box(
         modifier = modifier
-            .heightIn(min = 44.dp)
+            .heightIn(min = 40.dp)
             .clip(shape)
             .background(
                 if (selected) MaterialTheme.colorScheme.primaryContainer
@@ -324,7 +382,7 @@ fun ChoiceChip(
             )
             .border(
                 1.dp,
-                if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
                 shape,
             )
             .clickable { onClick() }
@@ -339,6 +397,7 @@ fun ChoiceChip(
             else MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
         )
     }
 }
@@ -349,11 +408,11 @@ fun FavoritesRow(favorites: List<String>, onUse: (String) -> Unit, onRemove: (St
     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         items(favorites) { text ->
             Surface(
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(10.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant,
             ) {
                 Row(
-                    Modifier.padding(start = 12.dp, end = 4.dp).heightIn(min = 44.dp),
+                    Modifier.padding(start = 12.dp, end = 2.dp).heightIn(min = 44.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
@@ -366,7 +425,7 @@ fun FavoritesRow(favorites: List<String>, onUse: (String) -> Unit, onRemove: (St
                             .clickable { onUse(text) },
                     )
                     TextButton(onClick = { onRemove(text) }, modifier = Modifier.heightIn(min = 44.dp)) {
-                        Text("×", fontSize = 18.sp)
+                        Text("×", fontSize = 17.sp)
                     }
                 }
             }
@@ -374,7 +433,18 @@ fun FavoritesRow(favorites: List<String>, onUse: (String) -> Unit, onRemove: (St
     }
 }
 
-fun elapsedText(startedAt: Long): String {
-    val seconds = ((System.currentTimeMillis() - startedAt) / 1000).coerceAtLeast(0)
-    return String.format(Locale.US, "%d 秒", seconds)
+/** 43 秒 / 1 分 20 秒 — matches how long these jobs actually take. */
+fun elapsedLabel(seconds: Long): String =
+    if (seconds < 60) "$seconds 秒" else "${seconds / 60} 分 ${seconds % 60} 秒"
+
+fun relativeTime(timestamp: Long): String {
+    val zone = ZoneId.systemDefault()
+    val moment = Instant.ofEpochMilli(timestamp).atZone(zone)
+    val today = LocalDate.now(zone)
+    val clock = String.format(java.util.Locale.US, "%02d:%02d", moment.hour, moment.minute)
+    return when (moment.toLocalDate()) {
+        today -> "今天 $clock"
+        today.minusDays(1) -> "昨天 $clock"
+        else -> "${moment.monthValue} 月 ${moment.dayOfMonth} 日"
+    }
 }

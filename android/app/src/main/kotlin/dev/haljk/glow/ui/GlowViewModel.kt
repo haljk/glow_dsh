@@ -37,9 +37,9 @@ import kotlin.reflect.KProperty
 
 /** The three paths through the app. */
 enum class Scenario(val title: String, val blurb: String) {
-    TEXT("写一句话出图", "从零得到一张图"),
-    RETOUCH("拿一张照片精修", "换背景、换衣服…别处不动"),
-    COMBINE("多张图合在一起", "把人物放进另一个场景"),
+    TEXT("一句话出图", "从零得到一张图"),
+    RETOUCH("照片精修", "换背景换衣服"),
+    COMBINE("多图合成", "把人物放进别处"),
 }
 
 /**

@@ -58,7 +58,7 @@ class UiTreeDumpTest {
     @Test
     fun `retouch tree with a preset`() {
         val vm = launch()
-        compose.onNodeWithText("拿一张照片精修").performClick()
+        compose.onNodeWithText("照片精修").performClick()
         compose.waitForIdle()
         vm.presetId = "bg-replace"
         compose.waitForIdle()
@@ -68,7 +68,7 @@ class UiTreeDumpTest {
     @Test
     fun `combine tree`() {
         launch()
-        compose.onNodeWithText("多张图合在一起").performClick()
+        compose.onNodeWithText("多图合成").performClick()
         compose.waitForIdle()
         dump("03-workbench-combine")
     }

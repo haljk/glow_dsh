@@ -9,6 +9,8 @@ import android.os.Environment
 import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -22,22 +24,31 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -56,11 +67,14 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import dev.haljk.glow.data.GalleryItem
+import dev.haljk.glow.ui.theme.glow
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -71,24 +85,40 @@ private enum class CompareMode(val label: String) {
     SWITCH("切换"),
     SIDE("并排"),
     WIPE("滑动"),
-    SINGLE("单看"),
 }
 
 /** Modes offered when a reference image exists; side-by-side is opt-in on a phone. */
 private val COMPARE_MODES = listOf(CompareMode.SWITCH, CompareMode.SIDE, CompareMode.WIPE)
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Full-screen viewer.
+ *
+ * Deliberately not a Scaffold: the chrome here is a fixed dark surface in both
+ * themes, and the picture should get every pixel between the two bars. The
+ * previous version used a light TopAppBar with white text on it, which made the
+ * title and the only exit control literally invisible in light mode.
+ */
 @Composable
 fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val resultFile = vm.fileOf(item)
     val refFile = vm.refFileOf(item, 0)
-    // On a 411dp-wide phone, side-by-side gives each image under 200dp — too small
-    // to judge detail, so switching is the default and the split views are optional.
-    var mode by remember { mutableStateOf(if (refFile != null) CompareMode.SWITCH else CompareMode.SINGLE) }
+    val chrome = MaterialTheme.glow.viewerSurface
+    val onChrome = MaterialTheme.glow.viewerContent
+    val danger = MaterialTheme.glow.viewerDanger
+
+    var mode by remember { mutableStateOf(if (refFile != null) CompareMode.SWITCH else CompareMode.SWITCH) }
     var fraction by remember { mutableFloatStateOf(0.5f) }
     var showReference by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    var hintVisible by remember { mutableStateOf(true) }
+
+    LaunchedEffect(mode, showReference) {
+        hintVisible = true
+        delay(3000)
+        hintVisible = false
+    }
 
     val requestWrite = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -97,100 +127,59 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
         else vm.post("没有存储权限，无法存到相册")
     }
 
-    Scaffold(
-        containerColor = Color.Black,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            item.note.ifBlank { item.displaySize },
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            listOfNotNull(
-                                item.displaySize,
-                                item.elapsedLabel().ifBlank { null },
-                                item.seed.takeIf { it != 0L }?.let { "种子 $it" },
-                            ).joinToString(" · "),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = Color.White.copy(alpha = 0.7f),
-                        )
-                    }
-                },
-                navigationIcon = {
-                    TextButton(onClick = onClose, modifier = Modifier.heightIn(min = 48.dp)) {
-                        Text("返回", color = Color.White)
-                    }
-                },
-            )
-        },
-        bottomBar = {
-            Surface(color = Color(0xFF141317)) {
-                Column(
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(chrome)
+            .windowInsetsPadding(WindowInsets.safeDrawing),
+    ) {
+        // ---------------------------------------------------------------- chrome
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .padding(start = 4.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onClose, modifier = Modifier.size(48.dp)) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "返回",
+                    tint = onChrome,
+                )
+            }
+            Column(Modifier.weight(1f).padding(start = 4.dp)) {
+                Text(
+                    item.note.ifBlank { item.displaySize },
+                    style = MaterialTheme.typography.titleMedium,
+                    color = onChrome,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "${item.displaySize} · ${item.elapsedLabel()}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = onChrome.copy(alpha = 0.7f),
+                    maxLines = 1,
+                )
+            }
+            if (refFile != null) {
+                Row(
                     Modifier
-                        .navigationBarsPadding()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(onChrome.copy(alpha = 0.12f))
+                        .padding(2.dp),
                 ) {
-                    if (refFile != null) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            COMPARE_MODES.forEach { entry ->
-                                val selected = entry == mode
-                                TextButton(
-                                    onClick = { mode = entry },
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .heightIn(min = 44.dp)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(
-                                            if (selected) Color.White.copy(alpha = 0.16f) else Color.Transparent,
-                                        ),
-                                ) {
-                                    Text(
-                                        entry.label,
-                                        color = if (selected) Color.White else Color.White.copy(alpha = 0.65f),
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        ViewerAction("存到相册") {
-                            val needsPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
-                                ContextCompat.checkSelfPermission(
-                                    context,
-                                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                                ) != PackageManager.PERMISSION_GRANTED
-                            if (needsPermission) {
-                                requestWrite.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                            } else {
-                                scope.launch { export(context, resultFile, vm::post) }
-                            }
-                        }
-                        ViewerAction(if (item.archived) "移出归档" else "归档") {
-                            vm.archive(item, archived = !item.archived)
-                            onClose()
-                        }
-                        ViewerAction("删除") {
-                            vm.delete(item)
-                            onClose()
-                        }
-                    }
+                    SwitchPill("原图", showReference, chrome, onChrome) { showReference = true }
+                    SwitchPill("结果", !showReference, chrome, onChrome) { showReference = false }
                 }
             }
-        },
-    ) { padding ->
-        Box(
-            Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .background(Color.Black),
-        ) {
+        }
+
+        // ------------------------------------------------------------------ image
+        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             when (mode) {
-                CompareMode.SINGLE, CompareMode.SWITCH -> SwitchCompare(
+                CompareMode.SWITCH -> SwitchCompare(
                     referenceFile = refFile,
                     resultFile = resultFile,
                     showReference = showReference,
@@ -209,16 +198,153 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
                     onFractionChange = { fraction = it },
                 )
             }
+
+            val hintText = when {
+                refFile != null && mode == CompareMode.SWITCH -> "左右滑动切换原图与结果"
+                refFile != null && mode == CompareMode.WIPE -> "拖动分界线对比"
+                refFile == null -> "双指缩放 · 双击放大"
+                else -> ""
+            }
+            val hintAlpha by animateFloatAsState(
+                targetValue = if (hintVisible) 1f else 0f,
+                animationSpec = tween(400),
+                label = "hint",
+            )
+            if (hintText.isNotEmpty() && hintAlpha > 0.01f) {
+                Text(
+                    hintText,
+                    color = onChrome.copy(alpha = 0.85f),
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 16.dp)
+                        .graphicsLayer { alpha = hintAlpha }
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.glow.scrim.copy(alpha = 0.45f))
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                )
+            }
+        }
+
+        // ------------------------------------------------------------- bottom bar
+        if (refFile != null) {
+            ModeSegments(current = mode, chrome = chrome, onChrome = onChrome) { mode = it }
+        }
+        HorizontalDivider(
+            thickness = 1.dp,
+            color = onChrome.copy(alpha = 0.10f),
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 56.dp)
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ViewAction("存到相册", onChrome) {
+                val needsPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                    ) != PackageManager.PERMISSION_GRANTED
+                if (needsPermission) {
+                    requestWrite.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                } else {
+                    scope.launch { export(context, resultFile, vm::post) }
+                }
+            }
+            ViewAction(if (item.archived) "移出归档" else "归档", onChrome) {
+                vm.archive(item, archived = !item.archived)
+                onClose()
+            }
+            ViewAction("删除", danger) { confirmDelete = true }
+        }
+    }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("删除这张？") },
+            text = { Text("图片与它的参考图副本会一起删掉，不能恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    vm.delete(item)
+                    onClose()
+                }) { Text("删除", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("取消") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun SwitchPill(
+    label: String,
+    selected: Boolean,
+    chrome: Color,
+    onChrome: Color,
+    onClick: () -> Unit,
+) {
+    Text(
+        label,
+        color = if (selected) chrome else onChrome.copy(alpha = 0.75f),
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        modifier = Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (selected) onChrome else Color.Transparent)
+            .clickable { onClick() }
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+    )
+}
+
+/** Reading "how" is navigation, not a task: it is styled as a selector, not buttons. */
+@Composable
+private fun ModeSegments(
+    current: CompareMode,
+    chrome: Color,
+    onChrome: Color,
+    onPick: (CompareMode) -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(onChrome.copy(alpha = 0.08f))
+            .padding(2.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        COMPARE_MODES.forEach { entry ->
+            val selected = entry == current
+            Text(
+                entry.label,
+                color = if (selected) chrome else onChrome.copy(alpha = 0.6f),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 36.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (selected) onChrome else Color.Transparent)
+                    .clickable { onPick(entry) }
+                    .padding(vertical = 9.dp),
+            )
         }
     }
 }
 
 @Composable
-private fun RowScope.ViewerAction(label: String, onClick: () -> Unit) {
+private fun RowScope.ViewAction(label: String, color: Color, onClick: () -> Unit) {
     TextButton(onClick = onClick, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
-        Text(label, color = Color.White, maxLines = 1)
+        Text(label, color = color, style = MaterialTheme.typography.labelLarge, maxLines = 1)
     }
 }
+
 
 @Composable
 private fun LabeledPane(label: String, file: File?, modifier: Modifier = Modifier) {
@@ -234,113 +360,24 @@ private fun LabeledPane(label: String, file: File?, modifier: Modifier = Modifie
         }
         Text(
             label,
-            color = Color.White.copy(alpha = 0.85f),
+            color = MaterialTheme.glow.onScrim.copy(alpha = 0.85f),
             style = MaterialTheme.typography.labelMedium,
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .padding(top = 8.dp)
                 .clip(RoundedCornerShape(8.dp))
-                .background(Color.Black.copy(alpha = 0.5f))
+                .background(MaterialTheme.glow.scrim.copy(alpha = 0.5f))
                 .padding(horizontal = 8.dp, vertical = 3.dp),
         )
     }
 }
 
 /**
- * Wipe comparison.
- *
- * The reference is drawn on top of the result and clipped to the left of the
- * divider with `clipRect`, so both images keep the same scale and position —
- * without that, each side would re-fit and the comparison would be meaningless.
- */
-@Composable
-private fun WipeCompare(
-    referenceFile: File?,
-    resultFile: File?,
-    fraction: Float,
-    onFractionChange: (Float) -> Unit,
-) {
-    val reference = rememberFileBitmap(referenceFile, targetPx = 1800)
-    val result = rememberFileBitmap(resultFile, targetPx = 1800)
-    BoxWithConstraints(
-        Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                detectHorizontalDragGestures { change, _ ->
-                    onFractionChange((change.position.x / size.width.toFloat()).coerceIn(0.02f, 0.98f))
-                }
-            },
-    ) {
-        val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
-        DrawPane(result, "结果", Modifier.fillMaxSize())
-        DrawPane(
-            bitmap = reference,
-            label = null,
-            modifier = Modifier
-                .fillMaxSize()
-                .drawWithContent {
-                    clipRect(right = size.width * fraction) {
-                        this@drawWithContent.drawContent()
-                    }
-                },
-        )
-        Box(
-            Modifier
-                .offset(x = (maxWidth * fraction) - 1.dp)
-                .width(2.dp)
-                .fillMaxSize()
-                .background(Color.White.copy(alpha = 0.9f)),
-        )
-        Text(
-            "拖动分界线对比",
-            color = Color.White.copy(alpha = 0.75f),
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 14.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(Color.Black.copy(alpha = 0.45f))
-                .padding(horizontal = 10.dp, vertical = 4.dp),
-        )
-        // Keep the compiler honest about the unused derived value.
-        if (widthPx < 0f) Text("", color = Color.Transparent)
-    }
-}
-
-@Composable
-private fun DrawPane(bitmap: ImageBitmap?, label: String?, modifier: Modifier) {
-    Box(modifier, contentAlignment = Alignment.Center) {
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap,
-                contentDescription = label,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Fit,
-            )
-        }
-        if (label != null) {
-            Text(
-                label,
-                color = Color.White.copy(alpha = 0.85f),
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(8.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color.Black.copy(alpha = 0.5f))
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-            )
-        }
-    }
-}
-
-/**
  * One full-size image at a time, flipped left/right.
  *
- * This is the default comparison on a phone: a split view would leave each image
- * under 200dp wide, which is useless for judging whether a retouch kept the face.
- * Pinch-zoom is only offered when there is no reference to switch to, so the two
- * gestures never fight over the same drag.
+ * A split view leaves each image under 200dp on a 411dp screen, which is useless
+ * for judging whether a retouch kept the face. Pinch-zoom only applies when there
+ * is nothing to switch to, so the two gestures never fight over the same drag.
  */
 @Composable
 private fun SwitchCompare(
@@ -375,44 +412,81 @@ private fun SwitchCompare(
                 contentScale = ContentScale.Fit,
             )
         }
-        Row(
-            Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 10.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color.Black.copy(alpha = 0.5f))
-                .padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            SwitchPill("原图", showReference) { if (!showReference) onToggle() }
-            SwitchPill("结果", !showReference) { if (showReference) onToggle() }
-        }
-        Text(
-            "左右滑动切换原图与结果",
-            color = Color.White.copy(alpha = 0.8f),
-            style = MaterialTheme.typography.labelMedium,
+    }
+}
+
+/**
+ * Wipe comparison.
+ *
+ * The reference is drawn on top of the result and clipped to the left of the
+ * divider with `clipRect`, so both images keep the same scale and position —
+ * without that, each side would re-fit and the comparison would be meaningless.
+ */
+@Composable
+private fun WipeCompare(
+    referenceFile: File?,
+    resultFile: File?,
+    fraction: Float,
+    onFractionChange: (Float) -> Unit,
+) {
+    val reference = rememberFileBitmap(referenceFile, targetPx = 1800)
+    val result = rememberFileBitmap(resultFile, targetPx = 1800)
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures { change, _ ->
+                    onFractionChange((change.position.x / size.width.toFloat()).coerceIn(0.02f, 0.98f))
+                }
+            },
+    ) {
+        DrawPane(result, "结果", Modifier.fillMaxSize())
+        DrawPane(
+            bitmap = reference,
+            label = null,
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 14.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(Color.Black.copy(alpha = 0.45f))
-                .padding(horizontal = 10.dp, vertical = 4.dp),
+                .fillMaxSize()
+                .drawWithContent {
+                    clipRect(right = size.width * fraction) {
+                        this@drawWithContent.drawContent()
+                    }
+                },
+        )
+        Box(
+            Modifier
+                .offset(x = (maxWidth * fraction) - 1.dp)
+                .width(2.dp)
+                .fillMaxSize()
+                .background(MaterialTheme.glow.onScrim.copy(alpha = 0.9f)),
         )
     }
 }
 
 @Composable
-private fun SwitchPill(label: String, selected: Boolean, onClick: () -> Unit) {
-    Text(
-        label,
-        color = if (selected) Color.Black else Color.White,
-        style = MaterialTheme.typography.labelLarge,
-        modifier = Modifier
-            .clip(RoundedCornerShape(9.dp))
-            .background(if (selected) Color.White else Color.Transparent)
-            .clickable { onClick() }
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-    )
+private fun DrawPane(bitmap: ImageBitmap?, label: String?, modifier: Modifier) {
+    Box(modifier, contentAlignment = Alignment.Center) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = label,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit,
+            )
+        }
+        if (label != null) {
+            Text(
+                label,
+                color = MaterialTheme.glow.onScrim.copy(alpha = 0.85f),
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.glow.scrim.copy(alpha = 0.5f))
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+            )
+        }
+    }
 }
 
 @Composable
@@ -453,12 +527,6 @@ private fun ZoomableImage(file: File?) {
                 contentScale = ContentScale.Fit,
             )
         }
-        Text(
-            "双指缩放 · 双击放大",
-            color = Color.White.copy(alpha = 0.55f),
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
-        )
     }
 }
 

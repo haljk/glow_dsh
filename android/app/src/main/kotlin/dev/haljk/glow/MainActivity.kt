@@ -3,6 +3,7 @@ package dev.haljk.glow
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -19,6 +20,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // targetSdk 36 enforces edge-to-edge anyway; opting in explicitly lets the
+        // Scaffolds apply the insets instead of guessing.
+        enableEdgeToEdge()
         setContent {
             GlowTheme {
                 // Probe again whenever the app comes back: a stale "未连接" from

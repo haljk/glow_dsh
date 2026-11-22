@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The launch window and the adaptive icon background share this colour, so
+         a cold start is one continuous brand surface instead of a white flash. -->
+    <color name="splash_background">#6B4EFF</color>
+</resources>
