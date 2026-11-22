@@ -1,0 +1,882 @@
+{
+  "generatedAt": "2026-11-22T09:55:44.098Z",
+  "source": "recorded from the shipped Node implementation",
+  "note": "The Android port must reproduce every expected value exactly.",
+  "compose": [
+    {
+      "name": "no-preset-subject-only",
+      "input": {
+        "note": "把头发染成亚麻色",
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "以 <Picture 1> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、表情、姿态、镜头角度；另外，把头发染成亚麻色；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、发型、姿态与手部、服装其余部分、镜头角度与焦段、光照方向与强度、画面清晰度与噪点、整体色调、背景内容、主体在画面中的位置与构图；不增加也不删除任何物体。",
+        "presetId": "",
+        "references": 1,
+        "roles": [
+          "subject"
+        ]
+      }
+    },
+    {
+      "name": "no-preset-no-note",
+      "input": {
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "以 <Picture 1> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、表情、姿态、镜头角度；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、发型、姿态与手部、服装其余部分、镜头角度与焦段、光照方向与强度、画面清晰度与噪点、整体色调、背景内容、主体在画面中的位置与构图；不增加也不删除任何物体。",
+        "presetId": "",
+        "references": 1,
+        "roles": [
+          "subject"
+        ]
+      }
+    },
+    {
+      "name": "no-preset-two-roles",
+      "input": {
+        "note": "把图1的人放到图2里",
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          },
+          {
+            "role": "background",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "以 <Picture 1> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、表情、姿态、镜头角度；把背景替换为 <Picture 2> 中的场景；另外，把图1的人放到图2里；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、发型、姿态与手部、服装其余部分、镜头角度与焦段、光照方向与强度、画面清晰度与噪点、整体色调、背景内容、主体在画面中的位置与构图；不增加也不删除任何物体。",
+        "presetId": "",
+        "references": 2,
+        "roles": [
+          "subject",
+          "background"
+        ]
+      }
+    },
+    {
+      "name": "no-preset-detail-only",
+      "input": {
+        "note": "参考一下细节",
+        "refs": [
+          {
+            "role": "detail",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "局部细节参考 <Picture 1>；另外，参考一下细节。",
+        "presetId": "",
+        "references": 1,
+        "roles": [
+          "detail"
+        ]
+      }
+    },
+    {
+      "name": "no-preset-all-roles",
+      "input": {
+        "note": "合成",
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          },
+          {
+            "role": "background",
+            "dataUrl": "x"
+          },
+          {
+            "role": "outfit",
+            "dataUrl": "x"
+          },
+          {
+            "role": "style",
+            "dataUrl": "x"
+          },
+          {
+            "role": "scene",
+            "dataUrl": "x"
+          },
+          {
+            "role": "detail",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "以 <Picture 1> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、表情、姿态、镜头角度；把背景替换为 <Picture 2> 中的场景；把人物服装替换为 <Picture 3> 中的服装，保留版型、材质与褶皱；画面色调、光线质感与整体画风参考 <Picture 4>；构图与机位参考 <Picture 5>；局部细节参考 <Picture 6>；另外，合成；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、发型、姿态与手部、服装其余部分、镜头角度与焦段、光照方向与强度、画面清晰度与噪点、整体色调、背景内容、主体在画面中的位置与构图；不增加也不删除任何物体。",
+        "presetId": "",
+        "references": 6,
+        "roles": [
+          "subject",
+          "background",
+          "outfit",
+          "style",
+          "scene",
+          "detail"
+        ]
+      }
+    },
+    {
+      "name": "bg-replace-one-ref",
+      "input": {
+        "presetId": "bg-replace",
+        "note": "背景换成海边日落",
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "把人物从原背景中干净地分离出来，放到新的背景里；以 <Picture 1> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、表情、姿态、镜头角度；另外，背景换成海边日落；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、发型、姿态与手部、服装其余部分、镜头角度与焦段、画面清晰度与噪点、主体在画面中的位置与构图；不增加也不删除任何物体。",
+        "presetId": "bg-replace",
+        "references": 1,
+        "roles": [
+          "subject"
+        ]
+      }
+    },
+    {
+      "name": "bg-replace-two-refs",
+      "input": {
+        "presetId": "bg-replace",
+        "note": "",
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          },
+          {
+            "role": "background",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "把人物从原背景中干净地分离出来，放到新的背景里；以 <Picture 1> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、表情、姿态、镜头角度；把背景替换为 <Picture 2> 中的场景；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、发型、姿态与手部、服装其余部分、镜头角度与焦段、画面清晰度与噪点、主体在画面中的位置与构图；不增加也不删除任何物体。",
+        "presetId": "bg-replace",
+        "references": 2,
+        "roles": [
+          "subject",
+          "background"
+        ]
+      }
+    },
+    {
+      "name": "outfit-replace-one-ref",
+      "input": {
+        "presetId": "outfit-replace",
+        "note": "换成米色针织衫",
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "把人物身上的服装替换掉，其余部分不动；以 <Picture 1> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、表情、姿态、镜头角度；另外，换成米色针织衫；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、发型、姿态与手部、镜头角度与焦段、光照方向与强度、画面清晰度与噪点、整体色调、背景内容、主体在画面中的位置与构图；不增加也不删除任何物体。",
+        "presetId": "outfit-replace",
+        "references": 1,
+        "roles": [
+          "subject"
+        ]
+      }
+    },
+    {
+      "name": "outfit-replace-two-refs",
+      "input": {
+        "presetId": "outfit-replace",
+        "note": "",
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          },
+          {
+            "role": "outfit",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "把人物身上的服装替换掉，其余部分不动；以 <Picture 1> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、表情、姿态、镜头角度；把人物服装替换为 <Picture 2> 中的服装，保留版型、材质与褶皱；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、发型、姿态与手部、镜头角度与焦段、光照方向与强度、画面清晰度与噪点、整体色调、背景内容、主体在画面中的位置与构图；不增加也不删除任何物体。",
+        "presetId": "outfit-replace",
+        "references": 2,
+        "roles": [
+          "subject",
+          "outfit"
+        ]
+      }
+    },
+    {
+      "name": "hair-change",
+      "input": {
+        "presetId": "hair-change",
+        "note": "剪成短发",
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "改变人物的发型与发色，脸部与身体其余部分完全不动；以 <Picture 1> 为主体，完整保留其身份、面部特征与五官比例、肤色、表情、姿态、镜头角度；另外，剪成短发；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、姿态与手部、服装其余部分、镜头角度与焦段、光照方向与强度、画面清晰度与噪点、整体色调、背景内容、主体在画面中的位置与构图；不增加也不删除任何物体。",
+        "presetId": "hair-change",
+        "references": 1,
+        "roles": [
+          "subject"
+        ]
+      }
+    },
+    {
+      "name": "expression",
+      "input": {
+        "presetId": "expression",
+        "note": "微笑",
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "只调整人物的表情，五官形状、身份特征与姿态保持不变；以 <Picture 1> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、姿态、镜头角度；另外，微笑；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、发型、姿态与手部、服装其余部分、镜头角度与焦段、光照方向与强度、画面清晰度与噪点、整体色调、背景内容、主体在画面中的位置与构图；不增加也不删除任何物体。",
+        "presetId": "expression",
+        "references": 1,
+        "roles": [
+          "subject"
+        ]
+      }
+    },
+    {
+      "name": "light-change",
+      "input": {
+        "presetId": "light-change",
+        "note": "改成黄昏",
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "只改变整体光线方向、色温与时段氛围，构图与所有物体位置不变；以 <Picture 1> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、表情、姿态、镜头角度；另外，改成黄昏；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、发型、姿态与手部、服装其余部分、镜头角度与焦段、画面清晰度与噪点、背景内容、主体在画面中的位置与构图；不增加也不删除任何物体。",
+        "presetId": "light-change",
+        "references": 1,
+        "roles": [
+          "subject"
+        ]
+      }
+    },
+    {
+      "name": "clean-up",
+      "input": {
+        "presetId": "clean-up",
+        "note": "去掉左边路人",
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "移除画面中多余的路人、杂物与干扰元素，用合理的背景自然补上；以 <Picture 1> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、表情、姿态、镜头角度；另外，去掉左边路人；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、发型、姿态与手部、服装其余部分、镜头角度与焦段、光照方向与强度、画面清晰度与噪点、整体色调、主体在画面中的位置与构图。",
+        "presetId": "clean-up",
+        "references": 1,
+        "roles": [
+          "subject"
+        ]
+      }
+    },
+    {
+      "name": "cutout-white",
+      "input": {
+        "presetId": "cutout-white",
+        "note": "纯白背景",
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "把背景完整移除，换成干净的纯色背景；以 <Picture 1> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、表情、姿态、镜头角度；另外，纯白背景；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、发型、姿态与手部、服装其余部分、镜头角度与焦段、光照方向与强度、画面清晰度与噪点、整体色调、主体在画面中的位置与构图；不增加也不删除任何物体。",
+        "presetId": "cutout-white",
+        "references": 1,
+        "roles": [
+          "subject"
+        ]
+      }
+    },
+    {
+      "name": "restore",
+      "input": {
+        "presetId": "restore",
+        "note": "",
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "修复照片的老化痕迹：去除噪点与划痕，提升清晰度与细节，但人物长相、神态与年代感必须保留；以 <Picture 1> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、表情、姿态、镜头角度；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、发型、姿态与手部、服装其余部分、镜头角度与焦段、光照方向与强度、整体色调、背景内容、主体在画面中的位置与构图；不增加也不删除任何物体。",
+        "presetId": "restore",
+        "references": 1,
+        "roles": [
+          "subject"
+        ]
+      }
+    },
+    {
+      "name": "id-photo",
+      "input": {
+        "presetId": "id-photo",
+        "note": "蓝底",
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "处理成证件照样式：纯色背景、正面端正、光线均匀、五官清晰无遮挡；以 <Picture 1> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、表情、姿态、镜头角度；另外，蓝底；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、发型、姿态与手部、服装其余部分、镜头角度与焦段、整体色调、主体在画面中的位置与构图；不增加也不删除任何物体。",
+        "presetId": "id-photo",
+        "references": 1,
+        "roles": [
+          "subject"
+        ]
+      }
+    },
+    {
+      "name": "order-flipped",
+      "input": {
+        "presetId": "bg-replace",
+        "note": "",
+        "refs": [
+          {
+            "role": "background",
+            "dataUrl": "x"
+          },
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "prompt": "把人物从原背景中干净地分离出来，放到新的背景里；把背景替换为 <Picture 1> 中的场景；以 <Picture 2> 为主体，完整保留其身份、面部特征与五官比例、肤色、发型、表情、姿态、镜头角度；除上述明确指定的改动之外，其他一切保持不变：人物身份与面部特征、肤色与体型、表情与视线、发型、姿态与手部、服装其余部分、镜头角度与焦段、画面清晰度与噪点、主体在画面中的位置与构图；不增加也不删除任何物体。",
+        "presetId": "bg-replace",
+        "references": 2,
+        "roles": [
+          "background",
+          "subject"
+        ]
+      }
+    }
+  ],
+  "fitting": [
+    {
+      "name": "square-1024-fast",
+      "input": {
+        "sourceWidth": 1024,
+        "sourceHeight": 1024,
+        "budget": 409600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 640,
+        "height": 640,
+        "text": "640x640",
+        "ratio": "1:1",
+        "pixels": 409600
+      }
+    },
+    {
+      "name": "square-1024-normal",
+      "input": {
+        "sourceWidth": 1024,
+        "sourceHeight": 1024,
+        "budget": 1048576,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 1024,
+        "height": 1024,
+        "text": "1024x1024",
+        "ratio": "1:1",
+        "pixels": 1048576
+      }
+    },
+    {
+      "name": "square-1024-sharp",
+      "input": {
+        "sourceWidth": 1024,
+        "sourceHeight": 1024,
+        "budget": 2073600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 1440,
+        "height": 1440,
+        "text": "1440x1440",
+        "ratio": "1:1",
+        "pixels": 2073600
+      }
+    },
+    {
+      "name": "landscape-16x9-fast",
+      "input": {
+        "sourceWidth": 1920,
+        "sourceHeight": 1080,
+        "budget": 409600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 864,
+        "height": 480,
+        "text": "864x480",
+        "ratio": "9:5",
+        "pixels": 414720
+      }
+    },
+    {
+      "name": "landscape-16x9-normal",
+      "input": {
+        "sourceWidth": 1920,
+        "sourceHeight": 1080,
+        "budget": 1048576,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 1376,
+        "height": 768,
+        "text": "1376x768",
+        "ratio": "1.79:1",
+        "pixels": 1056768
+      }
+    },
+    {
+      "name": "landscape-16x9-sharp",
+      "input": {
+        "sourceWidth": 1920,
+        "sourceHeight": 1080,
+        "budget": 2073600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 1920,
+        "height": 1088,
+        "text": "1920x1088",
+        "ratio": "30:17",
+        "pixels": 2088960
+      }
+    },
+    {
+      "name": "landscape-3x2-fast",
+      "input": {
+        "sourceWidth": 6000,
+        "sourceHeight": 4000,
+        "budget": 409600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 768,
+        "height": 512,
+        "text": "768x512",
+        "ratio": "3:2",
+        "pixels": 393216
+      }
+    },
+    {
+      "name": "landscape-3x2-normal",
+      "input": {
+        "sourceWidth": 6000,
+        "sourceHeight": 4000,
+        "budget": 1048576,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 1248,
+        "height": 832,
+        "text": "1248x832",
+        "ratio": "3:2",
+        "pixels": 1038336
+      }
+    },
+    {
+      "name": "landscape-3x2-sharp",
+      "input": {
+        "sourceWidth": 6000,
+        "sourceHeight": 4000,
+        "budget": 2073600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 1760,
+        "height": 1184,
+        "text": "1760x1184",
+        "ratio": "1.49:1",
+        "pixels": 2083840
+      }
+    },
+    {
+      "name": "classic-4x3-fast",
+      "input": {
+        "sourceWidth": 4000,
+        "sourceHeight": 3000,
+        "budget": 409600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 736,
+        "height": 544,
+        "text": "736x544",
+        "ratio": "23:17",
+        "pixels": 400384
+      }
+    },
+    {
+      "name": "classic-4x3-normal",
+      "input": {
+        "sourceWidth": 4000,
+        "sourceHeight": 3000,
+        "budget": 1048576,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 1184,
+        "height": 896,
+        "text": "1184x896",
+        "ratio": "37:28",
+        "pixels": 1060864
+      }
+    },
+    {
+      "name": "classic-4x3-sharp",
+      "input": {
+        "sourceWidth": 4000,
+        "sourceHeight": 3000,
+        "budget": 2073600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 1664,
+        "height": 1248,
+        "text": "1664x1248",
+        "ratio": "4:3",
+        "pixels": 2076672
+      }
+    },
+    {
+      "name": "portrait-3x4-fast",
+      "input": {
+        "sourceWidth": 3024,
+        "sourceHeight": 4032,
+        "budget": 409600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 544,
+        "height": 736,
+        "text": "544x736",
+        "ratio": "17:23",
+        "pixels": 400384
+      }
+    },
+    {
+      "name": "portrait-3x4-normal",
+      "input": {
+        "sourceWidth": 3024,
+        "sourceHeight": 4032,
+        "budget": 1048576,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 896,
+        "height": 1184,
+        "text": "896x1184",
+        "ratio": "28:37",
+        "pixels": 1060864
+      }
+    },
+    {
+      "name": "portrait-3x4-sharp",
+      "input": {
+        "sourceWidth": 3024,
+        "sourceHeight": 4032,
+        "budget": 2073600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 1248,
+        "height": 1664,
+        "text": "1248x1664",
+        "ratio": "3:4",
+        "pixels": 2076672
+      }
+    },
+    {
+      "name": "portrait-9x16-fast",
+      "input": {
+        "sourceWidth": 1080,
+        "sourceHeight": 1920,
+        "budget": 409600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 480,
+        "height": 864,
+        "text": "480x864",
+        "ratio": "5:9",
+        "pixels": 414720
+      }
+    },
+    {
+      "name": "portrait-9x16-normal",
+      "input": {
+        "sourceWidth": 1080,
+        "sourceHeight": 1920,
+        "budget": 1048576,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 768,
+        "height": 1376,
+        "text": "768x1376",
+        "ratio": "0.56:1",
+        "pixels": 1056768
+      }
+    },
+    {
+      "name": "portrait-9x16-sharp",
+      "input": {
+        "sourceWidth": 1080,
+        "sourceHeight": 1920,
+        "budget": 2073600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 1088,
+        "height": 1920,
+        "text": "1088x1920",
+        "ratio": "17:30",
+        "pixels": 2088960
+      }
+    },
+    {
+      "name": "panorama-5x1-fast",
+      "input": {
+        "sourceWidth": 4000,
+        "sourceHeight": 800,
+        "budget": 409600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 1440,
+        "height": 288,
+        "text": "1440x288",
+        "ratio": "5:1",
+        "pixels": 414720
+      }
+    },
+    {
+      "name": "panorama-5x1-normal",
+      "input": {
+        "sourceWidth": 4000,
+        "sourceHeight": 800,
+        "budget": 1048576,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 2048,
+        "height": 416,
+        "text": "2048x416",
+        "ratio": "4.92:1",
+        "pixels": 851968
+      }
+    },
+    {
+      "name": "panorama-5x1-sharp",
+      "input": {
+        "sourceWidth": 4000,
+        "sourceHeight": 800,
+        "budget": 2073600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 2048,
+        "height": 416,
+        "text": "2048x416",
+        "ratio": "4.92:1",
+        "pixels": 851968
+      }
+    },
+    {
+      "name": "tall-1x5-fast",
+      "input": {
+        "sourceWidth": 800,
+        "sourceHeight": 4000,
+        "budget": 409600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 288,
+        "height": 1440,
+        "text": "288x1440",
+        "ratio": "1:5",
+        "pixels": 414720
+      }
+    },
+    {
+      "name": "tall-1x5-normal",
+      "input": {
+        "sourceWidth": 800,
+        "sourceHeight": 4000,
+        "budget": 1048576,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 416,
+        "height": 2048,
+        "text": "416x2048",
+        "ratio": "0.2:1",
+        "pixels": 851968
+      }
+    },
+    {
+      "name": "tall-1x5-sharp",
+      "input": {
+        "sourceWidth": 800,
+        "sourceHeight": 4000,
+        "budget": 2073600,
+        "multiple": 32,
+        "minEdge": 256,
+        "maxEdge": 2048
+      },
+      "expected": {
+        "width": 416,
+        "height": 2048,
+        "text": "416x2048",
+        "ratio": "0.2:1",
+        "pixels": 851968
+      }
+    }
+  ],
+  "rejects": [
+    {
+      "name": "preset-without-agreed-role",
+      "input": {
+        "presetId": "bg-replace",
+        "refs": [
+          {
+            "role": "detail",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "rejected": true,
+        "status": 400
+      }
+    },
+    {
+      "name": "no-refs",
+      "input": {
+        "note": "x",
+        "refs": []
+      },
+      "expected": {
+        "rejected": true,
+        "status": 400
+      }
+    },
+    {
+      "name": "unknown-preset",
+      "input": {
+        "presetId": "nope",
+        "refs": [
+          {
+            "role": "subject",
+            "dataUrl": "x"
+          }
+        ]
+      },
+      "expected": {
+        "rejected": true,
+        "status": 400
+      }
+    }
+  ]
+}

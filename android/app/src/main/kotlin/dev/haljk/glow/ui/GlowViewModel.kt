@@ -1,0 +1,393 @@
+package dev.haljk.glow.ui
+
+import android.app.Application
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import dev.haljk.glow.core.Density
+import dev.haljk.glow.core.EditInstructionRequest
+import dev.haljk.glow.core.InstructionComposer
+import dev.haljk.glow.core.InstructionRejected
+import dev.haljk.glow.core.Presets
+import dev.haljk.glow.core.ReferenceSpec
+import dev.haljk.glow.core.Role
+import dev.haljk.glow.core.SizeFit
+import dev.haljk.glow.data.FavoriteStore
+import dev.haljk.glow.data.GalleryItem
+import dev.haljk.glow.data.GalleryStore
+import dev.haljk.glow.data.ImageIntake
+import dev.haljk.glow.data.JobRegistry
+import dev.haljk.glow.data.JobRequest
+import dev.haljk.glow.data.ModelClient
+import dev.haljk.glow.data.ModelException
+import dev.haljk.glow.data.Settings
+import dev.haljk.glow.data.SettingsStore
+import dev.haljk.glow.service.GenerationService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+
+/** The three paths through the app. */
+enum class Scenario(val title: String, val blurb: String) {
+    TEXT("写一句话出图", "从零得到一张图"),
+    RETOUCH("拿一张照片精修", "换背景、换衣服…别处不动"),
+    COMBINE("多张图合在一起", "把人物放进另一个场景"),
+}
+
+/**
+ * One reference image and what it is for.
+ *
+ * [width]/[height] are filled in off the main thread right after the pick, so
+ * aspect inheritance never touches the disk during composition.
+ */
+data class RefSlot(
+    val uri: String,
+    val role: Role,
+    val width: Int = 0,
+    val height: Int = 0,
+) {
+    val hasSize: Boolean get() = width > 0 && height > 0
+}
+
+/** A named output size for text mode. */
+data class SizeChoice(val label: String, val width: Int, val height: Int) {
+    val text: String get() = "${width}x$height"
+}
+
+class GlowViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val settingsStore = SettingsStore(application.filesDir)
+    private val galleryStore = GalleryStore(File(application.filesDir, "gallery")).also { it.ensureDir() }
+    private val favoriteStore = FavoriteStore(application.filesDir)
+
+    // ---- settings
+    var settings by mutableStateOf(settingsStore.load())
+        private set
+    var imageProbe by mutableStateOf<ModelClient.ProbeResult?>(null)
+        private set
+    var llmProbe by mutableStateOf<ModelClient.ProbeResult?>(null)
+        private set
+    var probing by mutableStateOf(false)
+        private set
+
+    // ---- workbench state
+    var scenario by mutableStateOf(Scenario.TEXT)
+    var prompt by mutableStateOf("")
+    var presetId by mutableStateOf<String?>(null)
+    var refs by mutableStateOf<List<RefSlot>>(emptyList())
+        private set
+    var density by mutableStateOf(Density.NORMAL)
+    var sizeChoiceIndex by mutableStateOf(0)
+    var autoSize by mutableStateOf(true)
+    var seedText by mutableStateOf("")
+    var batchCount by mutableStateOf(1)
+
+    // ---- gallery
+    var activeItems by mutableStateOf<List<GalleryItem>>(emptyList())
+        private set
+    var archivedItems by mutableStateOf<List<GalleryItem>>(emptyList())
+        private set
+    var activeCount by mutableStateOf(0)
+        private set
+    var archivedCount by mutableStateOf(0)
+        private set
+
+    // ---- favorites & messages
+    var favorites by mutableStateOf(favoriteStore.load())
+        private set
+    var message by mutableStateOf<String?>(null)
+        private set
+    var submitting by mutableStateOf(false)
+        private set
+
+    /** Which image the viewer is showing, if any. */
+    var viewing by mutableStateOf<GalleryItem?>(null)
+
+    val presets get() = Presets.ALL
+
+    val sizeChoices = listOf(
+        SizeChoice("方形 · 1024²", 1024, 1024),
+        SizeChoice("竖版人像 · 3:4", 896, 1216),
+        SizeChoice("手机壁纸 · 9:16", 864, 1536),
+        SizeChoice("电脑壁纸 · 16:9", 1536, 864),
+        SizeChoice("横版照片 · 4:3", 1216, 896),
+        SizeChoice("超清横版 · 16:9", 2048, 1152),
+        SizeChoice("小图试手 · 512²", 512, 512),
+    )
+
+    val maxRefs: Int get() = if (scenario == Scenario.RETOUCH) 2 else 5
+
+    init {
+        refreshGallery()
+        probeServices()
+    }
+
+    // -------------------------------------------------------------- settings
+
+    fun saveSettings(next: Settings) {
+        settings = settingsStore.save(next)
+        probeServices()
+    }
+
+    fun probeServices() {
+        probing = true
+        viewModelScope.launch {
+            val client = ModelClient(settings)
+            val image = withContext(Dispatchers.IO) { client.probeImage() }
+            val llm = withContext(Dispatchers.IO) { client.probeLlm() }
+            imageProbe = image
+            llmProbe = llm
+            probing = false
+        }
+    }
+
+    // ------------------------------------------------------------- references
+
+    fun addRefs(uris: List<String>, defaultRole: Role = Role.SUBJECT) {
+        val room = maxRefs - refs.size
+        if (room <= 0) {
+            post("最多 ${maxRefs} 张参考图")
+            return
+        }
+        val added = uris.take(room).mapIndexed { index, uri ->
+            // The first image is always the subject; extras default to context.
+            val role = if (refs.isEmpty() && index == 0) Role.SUBJECT else defaultRole
+            RefSlot(uri, role)
+        }
+        refs = refs + added
+        if (uris.size > room) post("只放得下 ${maxRefs} 张，多余的没有加")
+        loadDimensions(added)
+    }
+
+    /** Reads intrinsic size once, off the main thread. */
+    private fun loadDimensions(slots: List<RefSlot>) {
+        if (slots.isEmpty()) return
+        viewModelScope.launch {
+            val measured = withContext(Dispatchers.IO) {
+                slots.map { slot ->
+                    val dims = ImageIntake.dimensions(getApplication(), android.net.Uri.parse(slot.uri))
+                    dims?.let { slot.copy(width = it.first, height = it.second) } ?: slot
+                }
+            }
+            val byUri = measured.associateBy { it.uri }
+            refs = refs.map { byUri[it.uri] ?: it }
+        }
+    }
+
+    fun removeRef(uri: String) {
+        refs = refs.filterNot { it.uri == uri }
+    }
+
+    fun setRole(uri: String, role: Role) {
+        refs = refs.map { if (it.uri == uri) it.copy(role = role) else it }
+    }
+
+    fun clearRefs() {
+        refs = emptyList()
+    }
+
+    // --------------------------------------------------------------- compose
+
+    /** What the app will actually send, for the "查看将发送的指令" sheet. */
+    fun previewInstruction(): String = runCatching { buildInstruction() }.getOrElse { it.message ?: "还缺少信息" }
+
+    private fun buildInstruction(): String {
+        val note = prompt.trim()
+        return when (scenario) {
+            Scenario.TEXT -> {
+                if (note.isEmpty()) throw InstructionRejected("先写一句描述，或点旁边的按钮让我帮你写")
+                note
+            }
+            Scenario.RETOUCH, Scenario.COMBINE -> {
+                if (refs.isEmpty()) throw InstructionRejected("先选一张照片")
+                val request = EditInstructionRequest(
+                    refs = refs.map { ReferenceSpec(it.role) },
+                    presetId = if (scenario == Scenario.COMBINE) null else presetId,
+                    note = note,
+                )
+                InstructionComposer.compose(request).prompt
+            }
+        }
+    }
+
+    /** Output size: text mode uses a named size, edit modes inherit the photo. */
+    fun resolveSize(): Pair<Int, Int> {
+        if (scenario == Scenario.TEXT) {
+            val choice = sizeChoices[sizeChoiceIndex.coerceIn(sizeChoices.indices)]
+            return choice.width to choice.height
+        }
+        if (!autoSize) {
+            val choice = sizeChoices[sizeChoiceIndex.coerceIn(sizeChoices.indices)]
+            return choice.width to choice.height
+        }
+        val first = refs.firstOrNull()
+        val (w, h) = if (first != null && first.hasSize) first.width to first.height else 1024 to 1024
+        val fitted = SizeFit.fit(w, h, density.budget) ?: return 1024 to 1024
+        return fitted.width to fitted.height
+    }
+
+    fun resolvedSizeLabel(): String {
+        val (w, h) = resolveSize()
+        val ratio = SizeFit.ratioLabel(w, h)
+        val waiting = scenario != Scenario.TEXT && autoSize && refs.firstOrNull()?.hasSize == false
+        return when {
+            waiting -> "正在读取原图尺寸…"
+            scenario == Scenario.TEXT || !autoSize -> "${w}×$h"
+            else -> "${w}×$h · 跟随原图比例 $ratio"
+        }
+    }
+
+    /** Whether pressing the primary action can produce anything. */
+    fun canSubmit(): Boolean = when (scenario) {
+        Scenario.TEXT -> prompt.isNotBlank()
+        Scenario.RETOUCH -> refs.isNotEmpty() && (presetId != null || prompt.isNotBlank())
+        Scenario.COMBINE -> refs.isNotEmpty()
+    }
+
+    fun submitBlockedReason(): String? = when {
+        scenario == Scenario.TEXT && prompt.isBlank() -> "先写一句描述，或点「帮我写」"
+        scenario != Scenario.TEXT && refs.isEmpty() -> "先选一张照片"
+        scenario == Scenario.RETOUCH && presetId == null && prompt.isBlank() -> "选一个预设，或者写下要改什么"
+        else -> null
+    }
+
+    // ---------------------------------------------------------------- submit
+
+    fun submit() {
+        if (submitting) return
+        // Explain rather than silently refusing: a dead button is worse than a message.
+        val blocked = submitBlockedReason()
+        if (blocked != null) {
+            post(blocked)
+            return
+        }
+        val instruction = try {
+            buildInstruction()
+        } catch (error: InstructionRejected) {
+            post(error.message ?: "还缺少信息")
+            return
+        }
+        val (width, height) = resolveSize()
+        val seed = seedText.trim().toLongOrNull() ?: (System.currentTimeMillis() % 2_000_000_000L)
+        val count = if (scenario == Scenario.TEXT) batchCount.coerceIn(1, 2) else 1
+        val isEdit = scenario != Scenario.TEXT
+        val request = JobRequest(
+            mode = if (isEdit) JobRequest.MODE_EDIT else JobRequest.MODE_TEXT,
+            prompt = instruction,
+            note = prompt.trim(),
+            presetId = if (scenario == Scenario.COMBINE) "" else (presetId ?: ""),
+            size = "${width}x$height",
+            seed = seed,
+            count = count,
+            referenceUris = refs.map { it.uri },
+            summary = GenerationService.summarise(instruction, isEdit),
+        )
+        submitting = true
+        try {
+            GenerationService.start(getApplication(), request)
+            post("已开始，等结果就行——可以切走做别的")
+        } catch (error: Exception) {
+            submitting = false
+            post("没能启动后台任务：${error.message ?: "未知原因"}")
+        }
+    }
+
+    /** Called when the service reports completion or failure. */
+    fun onJobFinished() {
+        submitting = false
+        refreshGallery()
+    }
+
+    // --------------------------------------------------------------- gallery
+
+    fun refreshGallery() {
+        activeItems = galleryStore.list(archived = false)
+        archivedItems = galleryStore.list(archived = true)
+        val (active, archived) = galleryStore.counts()
+        activeCount = active
+        archivedCount = archived
+    }
+
+    fun fileOf(item: GalleryItem): File = galleryStore.fileOf(item.name)
+    fun refFileOf(item: GalleryItem, index: Int): File? =
+        item.refFiles.getOrNull(index)?.let { galleryStore.fileOf(it) }
+
+    fun archive(item: GalleryItem, archived: Boolean) {
+        galleryStore.setArchived(item.name, archived)
+        refreshGallery()
+        post(if (archived) "已收进归档箱" else "已移出归档箱")
+    }
+
+    fun delete(item: GalleryItem) {
+        galleryStore.delete(item.name)
+        if (viewing?.name == item.name) viewing = null
+        refreshGallery()
+        post("已删除")
+    }
+
+    // ------------------------------------------------------------- favorites
+
+    fun saveFavorite() {
+        val text = prompt.trim()
+        if (text.isEmpty()) {
+            post("先写一句，再存成常用")
+            return
+        }
+        val next = favoriteStore.add(text)
+        if (next == null) {
+            post("常用提示词最多 ${FavoriteStore.MAX} 条，先删一条")
+            return
+        }
+        favorites = next
+        post("已存为常用")
+    }
+
+    fun removeFavorite(text: String) {
+        favorites = favoriteStore.remove(text)
+    }
+
+    fun useFavorite(text: String) {
+        prompt = text
+    }
+
+    // --------------------------------------------------------------- prompt AI
+
+    fun sharpenPrompt(onDone: (String) -> Unit) {
+        val text = prompt.trim()
+        if (text.isEmpty()) {
+            post("先写几个字，我照着扩写")
+            return
+        }
+        val mode = if (scenario == Scenario.TEXT) ModelClient.MODE_EXPAND else ModelClient.MODE_EDIT
+        viewModelScope.launch {
+            post("正在写…")
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    ModelClient(settings).assist(mode, text)
+                }
+                val first = result.firstOrNull()
+                if (first.isNullOrBlank()) {
+                    post("写作助手没有写出内容，请再试一次")
+                } else {
+                    onDone(first)
+                    message = null
+                }
+            } catch (error: ModelException) {
+                post(error.message ?: "写作助手不可用")
+            } catch (error: Exception) {
+                post("写作助手不可用：${error.message ?: "未知原因"}")
+            }
+        }
+    }
+
+    fun post(text: String) {
+        message = text
+    }
+
+    fun consumeMessage() {
+        message = null
+    }
+}

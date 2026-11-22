@@ -11,3 +11,16 @@ settings.json
 Thumbs.db
 *.log
 *.swp
+
+# Android
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk
+*.aab
+
+# Built APK handed to the user; not a source artifact
+dist/
