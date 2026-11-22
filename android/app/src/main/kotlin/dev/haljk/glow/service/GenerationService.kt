@@ -179,12 +179,21 @@ class GenerationService : Service() {
     private fun createChannel() {
         val manager = getSystemService(NotificationManager::class.java)
         if (manager.getNotificationChannel(CHANNEL_ID) == null) {
+            // The system keeps a channel across app updates and even across
+            // `pm clear`, so importance can only be changed by shipping a new id.
+            // v2 switched LOW -> DEFAULT: a silent channel gets no status-bar icon,
+            // which made a multi-minute job invisible in the background. The noise
+            // is switched off explicitly instead of by lowering importance.
             manager.createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "生成任务", NotificationManager.IMPORTANCE_LOW).apply {
+                NotificationChannel(CHANNEL_ID, "生成任务", NotificationManager.IMPORTANCE_DEFAULT).apply {
                     description = "图像生成与精修的进度"
                     setShowBadge(false)
+                    setSound(null, null)
+                    enableVibration(false)
                 },
             )
+            // Retire the v1 channel so the settings list does not grow a dead entry.
+            manager.deleteNotificationChannel(LEGACY_CHANNEL_ID)
         }
     }
 
@@ -241,7 +250,8 @@ class GenerationService : Service() {
 
     companion object {
         private const val TAG = "Glow"
-        private const val CHANNEL_ID = "glow_jobs"
+        private const val CHANNEL_ID = "glow_jobs_v2"
+private const val LEGACY_CHANNEL_ID = "glow_jobs"
         /** Safety net only; the job path releases far sooner. */
         private const val MAX_LOCK_MS = 20 * 60 * 1000L
         private const val NOTIFICATION_ID = 1001

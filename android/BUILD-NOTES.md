@@ -113,6 +113,23 @@ exactly like an emulator/IME fault; it was not.
 Breakpoints now come from `LocalConfiguration.current.screenHeightDp` instead. Note
 that the Robolectric focus test passes either way, so this one is only caught by
 driving the real app on a device.
+## Things only a device catches
+
+Robolectric renders the composition and drives semantics, but it does not run the
+real focus, IME and notification pipeline. These three escaped every unit test:
+
+1. **`BoxWithConstraints` around a `LazyVerticalGrid` killed tap-to-focus** for the
+   text fields inside it (`focused=false`, no IME, `mServedInputConnection=null`).
+   The identical field on the settings screen focused fine. Robust in Robolectric
+   either way. Breakpoints now come from `LocalConfiguration.current`.
+2. **A silent notification channel gets no status-bar icon.** `IMPORTANCE_LOW`
+   keeps a foreground job out of the status bar, and channel importance survives
+   `pm clear` and app updates — only a new channel id changes it, which is why the
+   channel is now `glow_jobs_v2` with sound and vibration switched off explicitly.
+3. **Gallery tiles cannot be found by a pixel offset.** The audit script used to
+   tap "section header + 280dp"; adding one saved image moved every tile and the
+   script silently photographed the wrong screen. It now locates a tile by size.
+
 ## Auditing the interface without spending generations
 
 `tools/audit-android-ui.ps1` drives the app on a device and records a frame

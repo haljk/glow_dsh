@@ -223,8 +223,23 @@ if ($edit) {
     $t = Texts $u
     Say ("键盘弹出时仍在屏幕上的文字：{0}" -f (($t | Select-Object -First 10) -join ' ¦ '))
     $d = [xml](Get-Content $u)
-    $btn = $d.SelectNodes("//*[@text='生成图片']") | Select-Object -First 1
-    Say ("主按钮是否仍可见：{0}" -f $(if ($btn) { "是 $($btn.bounds)" } else { '**否，被键盘挤掉**' }))
+    $btnText = $d.SelectNodes("//*[@text='生成图片']") | Select-Object -First 1
+    # Report the button container, not the text node inside it: the text is ~64x23dp
+    # and reading that as "the button" made this line look impossible for two rounds.
+    $btn = $null
+    if ($btnText) {
+        $node = $btnText
+        while ($node -and $node.clickable -ne 'true') { $node = $node.ParentNode }
+        $btn = if ($node -and $node.clickable -eq 'true') { $node } else { $btnText.ParentNode }
+    }
+    if ($btn) {
+        $bm = [regex]::Match($btn.bounds, '\[(\d+),(\d+)\]\[(\d+),(\d+)\]')
+        $bw = & $dp ([int]$bm.Groups[3].Value - [int]$bm.Groups[1].Value)
+        $bh = & $dp ([int]$bm.Groups[4].Value - [int]$bm.Groups[2].Value)
+        Say ("主按钮是否仍可见：是，{0}×{1}dp @ {2}" -f $bw, $bh, $btn.bounds)
+    } else {
+        Say '主按钮是否仍可见：**否，被键盘挤掉**'
+    }
     & $adb shell input keyevent 4 2>&1 | Out-Null
     Start-Sleep -Seconds 1
 }
