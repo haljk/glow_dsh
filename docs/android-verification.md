@@ -24,7 +24,7 @@
 | 5 | 无输入时主按钮为禁用态 | 通过 | `40-workbench-1.0.png` |
 | 6 | 横屏首屏可用，按钮 ≤560dp | 通过 | `47-landscape.png`（按钮 527dp） |
 | 7 | 图标不是模板 | 通过 | `36-app-drawer.png` |
-| 8 | 通知显示自绘单色图标 | 通过 | `55-notification-shade.png`；状态栏见 `62-statusbar-filled-crop.png` 与 `notif-at-shot.txt`（同一瞬间 `icon=RESOURCE 0x7f04000b`，时钟右侧出现 22px 小房子） |
+| 8 | 通知显示自绘单色图标 | 通过 | `55-notification-shade.png`；状态栏见 `62-statusbar-filled-crop.png`、`64-statusbar-fresh-install-crop.png`（卸载后全新安装、与交付包字节一致时采集）与 `notif-at-shot.txt`／`notif-fresh-install.txt`（同一瞬间 `icon=RESOURCE 0x7f04000b`） |
 | 9 | 深色冷启动不白闪 | 通过 | `28-splash-a.png`、`28-splash-b.png` |
 | 10 | 字阶 24/17/14/13，层级正确 | 通过 | `40`、`18`(1.3 倍) |
 | 11 | 场景卡选中不加重字重 | 通过 | `40` |
@@ -51,6 +51,9 @@
 - **照片精修**：672×1504，412 秒，参考图副本一并保存（早期真机记录，见 `BUILD-NOTES.md`）
 - **不可达路径**：把出图地址临时指向 `127.0.0.1:1`，得到红条失败态，文案包含地址与
   连接失败原因（`46-fail-banner.png`），随后地址已改回
+
+- **交付包全新安装冒烟**：卸载后用 `dist/glow-debug.apk` 重装，`pm path` 取出 `base.apk` 与交付包 SHA256 **字节一致**；
+  重新填地址后跑通一次完整生成（"final smoke test"），产物落盘，状态栏图标正常。
 
 ## 已知限制
 
