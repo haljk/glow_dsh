@@ -129,6 +129,12 @@ real focus, IME and notification pipeline. These three escaped every unit test:
 3. **Gallery tiles cannot be found by a pixel offset.** The audit script used to
    tap "section header + 280dp"; adding one saved image moved every tile and the
    script silently photographed the wrong screen. It now locates a tile by size.
+4. **A stroked vector renders nothing as a status-bar icon.** `ic_stat_glow` was
+   drawn with `strokeColor`, which looks right in the notification panel but leaves
+   the status-bar slot completely empty: small icons are alpha masks, and at 18dp a
+   2-unit stroke is one pixel of antialiasing. It has to be a filled silhouette —
+   the window is punched out with `fillType="evenOdd"`. Measure it by counting dark
+   columns in the status bar: 0 before, 36 after.
 
 ## Auditing the interface without spending generations
 
