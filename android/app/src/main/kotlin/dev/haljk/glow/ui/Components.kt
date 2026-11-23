@@ -267,7 +267,10 @@ fun JobBanner(snapshot: JobRegistry.Snapshot, onDismiss: () -> Unit, onGiveUp: (
         JobRegistry.Stage.RUNNING -> "正在生成"
         JobRegistry.Stage.FETCHING -> "正在取图"
         JobRegistry.Stage.DONE -> "完成，已保存 ${snapshot.produced} 张"
-        JobRegistry.Stage.FAILED -> "这次没成功"
+        // A cancel the user asked for is not a failure; calling it one reads as a bug.
+        JobRegistry.Stage.FAILED ->
+            if (snapshot.message.startsWith("已取消") || snapshot.message.startsWith("已放弃")) "已取消"
+            else "这次没成功"
     }
     val hint = when {
         snapshot.stage == JobRegistry.Stage.QUEUED && snapshot.queuePosition > 1 ->
