@@ -80,6 +80,14 @@
   说明没有重新提交；完成后队列 `succeeded` 只 +1，产物带同一个 `queueJobId`。
 - 进度真实跳动：每 3 秒采样得到 `约 6% → 13% → 19% → 32% → 39% → 52% → 58% → 71%`。
 
+- **真实精修走队列**：`job_20261123-135330_04c98e63`（`kind=edit`，`references=1`），
+  `queued → running（2% → 59%）→ succeeded`，222.94 秒；产物 1024×1024，
+  元数据带同一个 `queueJobId`、`note` 与参考图副本 `*.ref-1.png`。这是切换指南里最容易
+  被忽略的一条——multipart 提交与长任务组合。
+- **取消排队中的任务**：先用一次 1024 任务占住队列，再从 App 提交 512，此时队列 `queued`；
+  点「不再等」后队列侧变 `canceled`，横幅显示「已取消 / 已取消，模型还没开始」。
+  `running` 时取消被服务端拒绝（409），对应单测 `cancelling a running task is refused with 409`。
+
 **已知取舍**
 
 - 续查时 App 已经拿不到相册授权（photo picker 的读取权限不跨进程），所以恢复的精修任务
