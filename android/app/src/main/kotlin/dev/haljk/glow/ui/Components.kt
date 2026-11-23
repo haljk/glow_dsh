@@ -236,8 +236,12 @@ fun StatusDot(ok: Boolean?, label: String) {
  */
 @Composable
 fun JobBanner(snapshot: JobRegistry.Snapshot, onDismiss: () -> Unit, onGiveUp: () -> Unit) {
-    var now by remember(snapshot.id, snapshot.status) { mutableStateOf(System.currentTimeMillis()) }
-    if (snapshot.status == JobRegistry.Status.RUNNING) {
+    val active = snapshot.isActive
+    // Keyed on the job only: adding the stage here rebuilt the state on every stage
+    // change while the ticker kept writing to the old one, which froze the clock at
+    // the moment of the switch.
+    var now by remember(snapshot.id) { mutableStateOf(System.currentTimeMillis()) }
+    if (active) {
         LaunchedEffect(snapshot.id) {
             while (true) {
                 now = System.currentTimeMillis()
@@ -246,16 +250,33 @@ fun JobBanner(snapshot: JobRegistry.Snapshot, onDismiss: () -> Unit, onGiveUp: (
         }
     }
     val elapsedSeconds = ((now - snapshot.startedAt) / 1000).coerceAtLeast(0)
-    val running = snapshot.status == JobRegistry.Status.RUNNING
 
-    val container = when (snapshot.status) {
-        JobRegistry.Status.FAILED -> MaterialTheme.colorScheme.errorContainer
-        JobRegistry.Status.DONE -> MaterialTheme.colorScheme.primaryContainer
+    val container = when (snapshot.stage) {
+        JobRegistry.Stage.FAILED -> MaterialTheme.colorScheme.errorContainer
         else -> MaterialTheme.colorScheme.primaryContainer
     }
-    val accent = when (snapshot.status) {
-        JobRegistry.Status.FAILED -> MaterialTheme.colorScheme.error
+    val accent = when (snapshot.stage) {
+        JobRegistry.Stage.FAILED -> MaterialTheme.colorScheme.error
         else -> MaterialTheme.colorScheme.primary
+    }
+    // The queue means "running" is several states, and saying only 正在生成 while a
+    // task sits behind someone else's edit reads as a hang.
+    val title = when (snapshot.stage) {
+        JobRegistry.Stage.SUBMITTING -> "正在提交"
+        JobRegistry.Stage.QUEUED -> "排队中"
+        JobRegistry.Stage.RUNNING -> "正在生成"
+        JobRegistry.Stage.FETCHING -> "正在取图"
+        JobRegistry.Stage.DONE -> "完成，已保存 ${snapshot.produced} 张"
+        JobRegistry.Stage.FAILED -> "这次没成功"
+    }
+    val hint = when {
+        snapshot.stage == JobRegistry.Stage.QUEUED && snapshot.queuePosition > 1 ->
+            "前面还有 ${snapshot.queuePosition - 1} 个"
+        snapshot.stage == JobRegistry.Stage.QUEUED && snapshot.queuePosition == 1 -> "下一个就是"
+        snapshot.stage == JobRegistry.Stage.RUNNING && snapshot.percent > 0 -> "约 ${snapshot.percent}%"
+        snapshot.stage == JobRegistry.Stage.RUNNING || snapshot.stage == JobRegistry.Stage.FETCHING ->
+            "可以切走做别的，不会中断"
+        else -> ""
     }
 
     Surface(shape = RoundedCornerShape(14.dp), color = container, modifier = Modifier.fillMaxWidth()) {
@@ -266,15 +287,8 @@ fun JobBanner(snapshot: JobRegistry.Snapshot, onDismiss: () -> Unit, onGiveUp: (
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        text = when (snapshot.status) {
-                            JobRegistry.Status.RUNNING -> "正在生成"
-                            JobRegistry.Status.DONE -> "完成，已保存 ${snapshot.produced} 张"
-                            JobRegistry.Status.FAILED -> "这次没成功"
-                        },
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    if (running) {
+                    Text(text = title, style = MaterialTheme.typography.titleMedium)
+                    if (active) {
                         Text(
                             "已等 " + elapsedLabel(elapsedSeconds),
                             // Tabular figures: without them the number reflows every
@@ -282,11 +296,22 @@ fun JobBanner(snapshot: JobRegistry.Snapshot, onDismiss: () -> Unit, onGiveUp: (
                             style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
                             fontWeight = FontWeight.Normal,
                         )
-                        Text(
-                            "可以切走做别的，不会中断",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        if (hint.isNotEmpty()) {
+                            Text(
+                                hint,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (snapshot.message.isNotBlank()) {
+                            Text(
+                                snapshot.message,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     } else if (snapshot.message.isNotBlank()) {
                         Text(
                             snapshot.message,
@@ -297,7 +322,7 @@ fun JobBanner(snapshot: JobRegistry.Snapshot, onDismiss: () -> Unit, onGiveUp: (
                         )
                     }
                 }
-                if (running) {
+                if (active) {
                     TextButton(onClick = onGiveUp, modifier = Modifier.heightIn(min = 44.dp)) {
                         Text("不再等", style = MaterialTheme.typography.labelMedium)
                     }

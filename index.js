@@ -8,15 +8,21 @@
  * Generations run as background jobs, never as one long HTTP request. A 2K
  * edit takes minutes; if the wait lived in the response, switching panels,
  * reloading the page, or any request timeout in between would throw the result
- * away. The job queue is also the only place that serialises calls, because
- * the remote service accepts exactly one generation at a time.
+ * away.
+ *
+ * Since the queue service (`image-job-queue`, port 9742) exists, this plugin no
+ * longer waits on the model: it submits a task (202 + job id), polls a status
+ * endpoint, then downloads `result.png`. The queue owns serialisation and
+ * persistence, so submitting never blocks and a DSH restart no longer loses a
+ * running task — the job id is kept on disk and polling resumes. `imageApiMode`
+ * stays switchable back to the old synchronous service (`:9741`) for rollback.
  *
  * What this file accepts is bounded by what the remote service actually
  * enforces — see docs/DETAIL.md for the probe results.
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import http from 'node:http'
 import https from 'node:https'
@@ -31,21 +37,60 @@ export const inject = ['webServer']
  * addresses live in the user's own settings file, edited from the panel.
  */
 const DEFAULTS = {
-  imageBaseUrl: 'http://127.0.0.1:9741',
+  /**
+   * `queue` talks to the async job service (submit → poll → fetch), `sync`
+   * talks to the original blocking service. The switch exists because a rollback
+   * must be one setting, not a code change.
+   */
+  imageApiMode: 'queue',
+  imageBaseUrl: 'http://127.0.0.1:9742',
+  /** The blocking service. Only used in `sync` mode, and to read its size caps. */
+  imageSyncBaseUrl: 'http://127.0.0.1:9741',
   llmBaseUrl: 'http://127.0.0.1:9739',
   llmModel: 'default_model',
   outputDir: '',
   routePrefix: '/api/glow',
-  imageTimeoutMs: 900000,
+  /** How long one job may take end to end, queue wait included. */
+  imageTimeoutMs: 1800000,
   llmTimeoutMs: 180000,
 }
 
 /** User settings live outside the repository, so they are never committed. */
 const SETTINGS_DIR = path.join(os.homedir(), '.glow')
 const SETTINGS_FILE = path.join(SETTINGS_DIR, 'settings.json')
+/** Unfinished job ids survive a restart here, so a running task is not lost. */
+const JOBS_FILE = path.join(SETTINGS_DIR, 'jobs.json')
 
 /** Fields the panel may change; `routePrefix` is fixed at load time. */
-const EDITABLE_FIELDS = ['imageBaseUrl', 'llmBaseUrl', 'llmModel', 'outputDir', 'imageTimeoutMs', 'llmTimeoutMs']
+const EDITABLE_FIELDS = [
+  'imageApiMode',
+  'imageBaseUrl',
+  'imageSyncBaseUrl',
+  'llmBaseUrl',
+  'llmModel',
+  'outputDir',
+  'imageTimeoutMs',
+  'llmTimeoutMs',
+]
+
+/**
+ * Queue client policy. Every request is short; the only long wait is the
+ * business deadline (`imageTimeoutMs`), checked between polls.
+ */
+const QUEUE = {
+  /** The service polls its own worker every 3 s; 4 s keeps us from queueing up. */
+  pollIntervalMs: 4000,
+  submitTimeoutMs: 30000,
+  statusTimeoutMs: 20000,
+  resultTimeoutMs: 180000,
+  /** Our own concurrency cap — the service allows 64, but one app must not fill it. */
+  maxPending: 20,
+  maxSubmitAttempts: 6,
+  /** ~80 s of unreadable status before giving up, so a blip is not fatal. */
+  maxStatusFailures: 20,
+  defaultRetryAfterMs: 30000,
+  retentionDays: 7,
+}
 
 function normalizeServiceUrl(value, fallback) {
   const raw = String(value === undefined || value === null ? '' : value).trim()
@@ -66,14 +111,48 @@ function normalizeServiceUrl(value, fallback) {
 function resolveSettings(input, base = DEFAULTS) {
   const source = input && typeof input === 'object' ? input : {}
   const resolved = { ...base }
+  resolved.imageApiMode = resolveMode(source.imageApiMode, base.imageApiMode)
   resolved.imageBaseUrl = normalizeServiceUrl(source.imageBaseUrl, base.imageBaseUrl)
+  resolved.imageSyncBaseUrl = normalizeServiceUrl(source.imageSyncBaseUrl, base.imageSyncBaseUrl)
   resolved.llmBaseUrl = normalizeServiceUrl(source.llmBaseUrl, base.llmBaseUrl)
   const model = String(source.llmModel === undefined ? base.llmModel : source.llmModel).trim()
   resolved.llmModel = model || base.llmModel
   if (source.outputDir !== undefined) resolved.outputDir = String(source.outputDir || '').trim()
-  resolved.imageTimeoutMs = clampInt(source.imageTimeoutMs, 30000, 3600000, base.imageTimeoutMs)
+  // A business deadline has to outlast one queued 2K edit, so the floor is 1 min.
+  resolved.imageTimeoutMs = clampInt(source.imageTimeoutMs, 60000, 7200000, base.imageTimeoutMs)
   resolved.llmTimeoutMs = clampInt(source.llmTimeoutMs, 10000, 600000, base.llmTimeoutMs)
   return resolved
+}
+
+function resolveMode(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback
+  if (value === 'queue' || value === 'sync') return value
+  throw new HttpError(400, `服务模式只能是 queue 或 sync（收到 "${value}"）`)
+}
+
+/**
+ * Settings written before the queue existed point at the blocking service and
+ * carry no mode. Moving them is safe because port 9741 is unambiguously the
+ * synchronous one; the old address is kept as the rollback target.
+ */
+function migrateSettings(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {}
+  if (source.imageApiMode === 'queue' || source.imageApiMode === 'sync') return source
+  const next = { ...source, imageApiMode: DEFAULTS.imageApiMode }
+  const url = String(source.imageBaseUrl || '').trim()
+  if (!url) return next
+  if (!next.imageSyncBaseUrl) next.imageSyncBaseUrl = url
+  try {
+    const parsed = new URL(url)
+    if (parsed.port === '9741') {
+      parsed.port = '9742'
+      next.imageBaseUrl = `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}`
+      next.migratedFrom = url
+    }
+  } catch {
+    /* leave the value alone; resolveSettings reports it to the user */
+  }
+  return next
 }
 
 /** Bounds the image service enforces; verified by probe, not assumed. */
@@ -495,12 +574,24 @@ export function apply(ctx, config) {
 
   /** Persisted, user-editable service settings; never part of the repo. */
   function readStoredSettings() {
+    let parsed
     try {
-      const parsed = JSON.parse(readFileSync(SETTINGS_FILE, 'utf8'))
-      return parsed && typeof parsed === 'object' ? parsed : {}
+      parsed = JSON.parse(readFileSync(SETTINGS_FILE, 'utf8'))
     } catch {
       return {}
     }
+    const raw = parsed && typeof parsed === 'object' ? parsed : {}
+    const migrated = migrateSettings(raw)
+    if (migrated !== raw) {
+      // Written back once, so the panel shows the real addresses next time.
+      try {
+        mkdirSync(SETTINGS_DIR, { recursive: true })
+        writeFileSync(SETTINGS_FILE, JSON.stringify(migrated, null, 2), 'utf8')
+      } catch {
+        /* a read-only settings dir must not stop activation */
+      }
+    }
+    return migrated
   }
 
   let stored = readStoredSettings()
@@ -533,16 +624,18 @@ export function apply(ctx, config) {
 
   /** id -> job; finished jobs are pruned lazily so the client can still read them. */
   const jobs = new Map()
-  const queue = []
-  let running = false
+  let ticking = false
   let lastBusyNote = ''
+  let lastQueueError = ''
 
   // --------------------------------------------------------------- settings
 
   function publicSettings() {
     return {
       settings: {
+        imageApiMode: cfg.imageApiMode,
         imageBaseUrl: cfg.imageBaseUrl,
+        imageSyncBaseUrl: cfg.imageSyncBaseUrl,
         llmBaseUrl: cfg.llmBaseUrl,
         llmModel: cfg.llmModel,
         outputDir: cfg.outputDir,
@@ -550,7 +643,9 @@ export function apply(ctx, config) {
         llmTimeoutMs: cfg.llmTimeoutMs,
       },
       defaults: {
+        imageApiMode: DEFAULTS.imageApiMode,
         imageBaseUrl: DEFAULTS.imageBaseUrl,
+        imageSyncBaseUrl: DEFAULTS.imageSyncBaseUrl,
         llmBaseUrl: DEFAULTS.llmBaseUrl,
         llmModel: DEFAULTS.llmModel,
         imageTimeoutMs: DEFAULTS.imageTimeoutMs,
@@ -559,6 +654,7 @@ export function apply(ctx, config) {
       editable: EDITABLE_FIELDS,
       stored: { path: SETTINGS_FILE, overrides: stored },
       outputDir,
+      queue: { pollIntervalMs: QUEUE.pollIntervalMs, maxPending: QUEUE.maxPending, retentionDays: QUEUE.retentionDays },
     }
   }
 
@@ -579,6 +675,8 @@ export function apply(ctx, config) {
     stored = next
     cfg = buildConfig()
     outputDir = resolveOutputDir()
+    // The addresses just changed, so the cached size caps are stale.
+    syncCapsCache = { at: 0, value: null }
     return publicSettings()
   }
 
@@ -634,6 +732,8 @@ export function apply(ctx, config) {
       references: item.references ?? 0,
       presetId: item.presetId || '',
       refFiles,
+      // The queue's own id, so a stored image can be traced back to a task.
+      queueJobId: item.queueJobId || '',
       createdAt: Date.now(),
     }
     await writeFile(path.join(dir, name.replace(/\.png$/, '.json')), JSON.stringify(meta, null, 2), 'utf8')
@@ -712,13 +812,25 @@ export function apply(ctx, config) {
 
   // --------------------------------------------------------------- services
 
-  async function probeImageService(baseUrl = cfg.imageBaseUrl) {
-    const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(8000) })
-    if (!res.ok) throw new HttpError(502, `图像服务 /health 返回 HTTP ${res.status}`)
-    const health = await res.json()
+  /**
+   * The blocking service reports the size grid and the 4K flag; the queue does
+   * not, so these caps are read from the upstream once and reused briefly.
+   */
+  let syncCapsCache = { at: 0, value: null }
+
+  async function fetchJson(url, timeoutMs = 8000) {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
+    if (!res.ok) throw new HttpError(502, `服务 /health 返回 HTTP ${res.status}`)
+    return res.json()
+  }
+
+  /** The original `image-h3-image` health shape, kept for sync mode. */
+  async function probeSyncService(baseUrl = cfg.imageSyncBaseUrl) {
+    const health = await fetchJson(`${baseUrl}/health`)
     const sizes = health.sizes || {}
     return {
       ok: health.status === 'ok',
+      mode: 'sync',
       model: health.model,
       engine: health.engine,
       quantization: health.quantization,
@@ -737,6 +849,50 @@ export function apply(ctx, config) {
     }
   }
 
+  /**
+   * Queue mode: the queue is what we talk to, so "ready" means the queue is up
+   * and its upstream is reachable. A degraded queue still accepts tasks (they
+   * wait), which the badge wording says out loud.
+   */
+  async function probeImageService(baseUrl = imageBaseForMode(), mode = cfg.imageApiMode, syncBase = cfg.imageSyncBaseUrl) {
+    if (mode !== 'queue') return probeSyncService(baseUrl)
+    const health = await fetchJson(`${baseUrl}/health`)
+    const upstream = health.upstream && typeof health.upstream === 'object' ? health.upstream : {}
+    const depth = health.queue && typeof health.queue === 'object' ? health.queue : {}
+    const counts = health.jobs && typeof health.jobs === 'object' ? health.jobs : {}
+    let caps = syncCapsCache.value
+    if (!caps || Date.now() - syncCapsCache.at > 60000) {
+      caps = await probeSyncService(syncBase).catch(() => null)
+      // Only the saved address may populate the cache; a draft in the panel must not.
+      if (syncBase === cfg.imageSyncBaseUrl) syncCapsCache = { at: Date.now(), value: caps }
+    }
+    const upstreamOk = upstream.ok !== false
+    return {
+      ok: upstreamOk && health.status === 'ok',
+      degraded: !upstreamOk || health.status === 'degraded',
+      mode: 'queue',
+      service: health.service || 'image-job-queue',
+      model: upstream.model || (caps && caps.model) || '',
+      engine: health.service || 'image-job-queue',
+      quantization: caps ? caps.quantization : '',
+      steps: IMAGE_LIMITS.steps,
+      guidance: IMAGE_LIMITS.guidance,
+      referenceLimit: caps ? caps.referenceLimit : IMAGE_LIMITS.maxReferences,
+      maxEdge: caps ? caps.maxEdge : IMAGE_LIMITS.maxEdge,
+      multipleOf: caps ? caps.multipleOf : IMAGE_LIMITS.multipleOf,
+      defaultSize: caps ? caps.defaultSize : '1024x1024',
+      allow4k: Boolean(caps && caps.allow4k),
+      busy: Number(depth.running || 0) > 0 || Boolean(upstream.busy),
+      requests: counts.succeeded ?? 0,
+      errors: counts.failed ?? 0,
+      queueQueued: Number(depth.queued || 0),
+      queueRunning: Number(depth.running || 0),
+      capacity: Number(depth.capacity || 64),
+      retentionDays: Number(health.result_retention_days || QUEUE.retentionDays),
+      lastSeconds: upstream.last_generation_seconds ?? (caps ? caps.lastSeconds : null),
+    }
+  }
+
   async function probeLlmService(baseUrl = cfg.llmBaseUrl) {
     try {
       const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(8000) })
@@ -746,12 +902,18 @@ export function apply(ctx, config) {
     }
   }
 
+  /** Which address the active mode talks to; sync mode uses the blocking one. */
+  function imageBaseForMode() {
+    return cfg.imageApiMode === 'queue' ? cfg.imageBaseUrl : cfg.imageSyncBaseUrl
+  }
+
   /**
-   * POST to the image service over `node:http`. Our own queue already
-   * serialises calls, so a 409 here means something else is using the service;
-   * back off briefly and retry before surfacing a busy error.
+   * POST to the blocking image service over `node:http` (sync mode only). Its
+   * only peer for that one generation slot is whoever else is using the service,
+   * so a 409 is a busy signal to back off from, not a failure.
    */
   async function postImageService(pathname, init, timeoutMs) {
+    const base = imageBaseForMode()
     const deadline = Date.now() + timeoutMs
     let attempt = 0
     for (;;) {
@@ -761,14 +923,14 @@ export function apply(ctx, config) {
       try {
         res = await httpRequest({
           method: init.method || 'POST',
-          url: `${cfg.imageBaseUrl}${pathname}`,
+          url: `${base}${pathname}`,
           headers: init.headers,
           body: init.body,
           timeoutMs: remaining,
         })
       } catch (error) {
         if (error instanceof HttpError) throw error
-        throw new HttpError(502, `无法连接图像服务 ${cfg.imageBaseUrl}：${error.message}`)
+        throw new HttpError(502, `无法连接图像服务 ${base}：${error.message}`)
       }
       const text = res.body.toString('utf8')
       if (res.status >= 200 && res.status < 300) {
@@ -792,7 +954,7 @@ export function apply(ctx, config) {
   }
 
   async function downloadResult(url) {
-    const absolute = /^https?:\/\//i.test(url) ? url : new URL(url, cfg.imageBaseUrl).toString()
+    const absolute = /^https?:\/\//i.test(url) ? url : new URL(url, imageBaseForMode()).toString()
     let res
     try {
       res = await httpRequest({ method: 'GET', url: absolute, timeoutMs: 180000 })
@@ -824,6 +986,7 @@ export function apply(ctx, config) {
           presetId: request.presetId,
           note: request.note,
           refImages: request.refImages,
+          queueJobId: request.queueJobId,
         }),
       )
     }
@@ -836,6 +999,161 @@ export function apply(ctx, config) {
       engine: response.engine,
       model: response.model,
       steps: response.steps,
+    }
+  }
+
+  // ------------------------------------------------------- queue client
+
+  /** Honour the protection the service asks for, not a number we invented. */
+  function retryAfterMs(headers) {
+    const raw = headers && (headers['retry-after'] ?? headers['Retry-After'])
+    const seconds = Number(raw)
+    if (Number.isFinite(seconds) && seconds > 0) return Math.min(300000, Math.max(1000, seconds * 1000))
+    return QUEUE.defaultRetryAfterMs
+  }
+
+  /**
+   * One HTTP round trip against the queue. Transport failures are marked
+   * retriable: submitting again with the same Idempotency-Key is safe, and
+   * losing a job because the network blinked is not.
+   */
+  async function requestQueue(method, target, options = {}) {
+    const url = /^https?:\/\//i.test(target) ? target : `${cfg.imageBaseUrl}${target}`
+    try {
+      return await httpRequest({
+        method,
+        url,
+        headers: options.headers,
+        body: options.body,
+        timeoutMs: options.timeoutMs || QUEUE.statusTimeoutMs,
+      })
+    } catch (error) {
+      if (error instanceof HttpError) throw error
+      const failure = new Error(`连不上队列服务 ${cfg.imageBaseUrl}：${error.message}`)
+      failure.retriable = true
+      throw failure
+    }
+  }
+
+  /** `POST /v1/images/jobs` — returns the task object; 202 is a success. */
+  async function submitQueueJob(job) {
+    const res = await requestQueue('POST', job.submit.path, {
+      headers: job.submit.headers,
+      body: job.submit.body,
+      timeoutMs: QUEUE.submitTimeoutMs,
+    })
+    const text = res.body.toString('utf8')
+    if (res.status === 429) {
+      const failure = new Error('队列已满（服务端最多 64 个任务），稍后自动重试')
+      failure.retriable = true
+      failure.retryAfterMs = retryAfterMs(res.headers)
+      throw failure
+    }
+    if (res.status === 408 || res.status >= 500) {
+      const failure = new Error(describeServiceError(text) || `队列服务返回 HTTP ${res.status}`)
+      failure.retriable = true
+      throw failure
+    }
+    if (res.status >= 200 && res.status < 300) {
+      let parsed
+      try {
+        parsed = JSON.parse(text)
+      } catch {
+        throw new HttpError(502, '队列服务返回了非 JSON 响应')
+      }
+      if (!parsed || !parsed.id) throw new HttpError(502, '队列服务没有返回任务号，无法跟进')
+      return parsed
+    }
+    // 4xx is a parameter problem: retrying the same body cannot fix it.
+    throw new HttpError(400, describeServiceError(text))
+  }
+
+  async function fetchQueueJob(remoteId) {
+    const res = await requestQueue('GET', `/v1/images/jobs/${encodeURIComponent(remoteId)}`)
+    const text = res.body.toString('utf8')
+    if (res.status === 404) {
+      const failure = new Error('队列里查不到这个任务（可能已被清理）')
+      failure.gone = true
+      throw failure
+    }
+    if (res.status < 200 || res.status >= 300) {
+      const failure = new Error(describeServiceError(text) || `查状态返回 HTTP ${res.status}`)
+      failure.retriable = res.status >= 500
+      throw failure
+    }
+    try {
+      return JSON.parse(text)
+    } catch {
+      const failure = new Error('队列状态不是 JSON')
+      failure.retriable = true
+      throw failure
+    }
+  }
+
+  /**
+   * Fetch the finished images. The queue keeps results for 7 days, so a 404 here
+   * means the result expired before it was collected — say that plainly.
+   */
+  async function downloadQueueImage(url) {
+    const res = await requestQueue('GET', url, { timeoutMs: QUEUE.resultTimeoutMs })
+    if (res.status === 404) {
+      const failure = new Error('结果已过期（队列结果只保留 7 天）')
+      failure.gone = true
+      throw failure
+    }
+    if (res.status < 200 || res.status >= 300) throw new Error(`下载结果失败：HTTP ${res.status}`)
+    return res.body
+  }
+
+  /**
+   * Turn a finished task into gallery entries. Every image is downloaded before
+   * anything is written, so a failed download cannot leave half a batch (and an
+   * orphaned PNG) behind for the retry to duplicate.
+   */
+  async function collectQueueItems(job, state) {
+    const batch = Math.max(1, Number(job.request && job.request.batch) || 1)
+    const listed = Array.isArray(state.data) ? state.data : []
+    const entries =
+      listed.length > 0
+        ? listed
+        : Array.from({ length: batch }, (_, index) => ({
+            index,
+            url: `${cfg.imageBaseUrl}/v1/images/jobs/${encodeURIComponent(job.remoteId)}/${
+              index === 0 ? 'result.png' : `result-${index}.png`
+            }`,
+          }))
+    const fetched = []
+    for (const entry of entries) {
+      fetched.push({ entry, png: await downloadQueueImage(entry.url) })
+    }
+    const saved = []
+    for (const { entry, png } of fetched) {
+      saved.push(
+        await saveItem({
+          png,
+          mode: job.request.mode,
+          prompt: job.request.prompt,
+          revisedPrompt: entry.revised_prompt,
+          seed: entry.seed ?? job.request.seed ?? undefined,
+          size: entry.size || job.request.size,
+          seconds: entry.seconds ?? (Number(state.seconds) || undefined),
+          references: job.request.references ?? 0,
+          presetId: job.request.presetId,
+          note: job.request.note,
+          refImages: job.refImages,
+          queueJobId: job.remoteId,
+        }),
+      )
+    }
+    return {
+      items: saved.map((meta) => ({
+        ...meta,
+        fileUrl: `${cfg.routePrefix}/file/${encodeURIComponent(meta.name)}`,
+      })),
+      savedTo: outputDir,
+      engine: state.kind ? `image-job-queue · ${state.kind}` : 'image-job-queue',
+      model: state.model,
+      steps: IMAGE_LIMITS.steps,
     }
   }
 
@@ -896,9 +1214,45 @@ export function apply(ctx, config) {
 
   // -------------------------------------------------------------- job queue
 
+  function activeJobs() {
+    return [...jobs.values()].filter((job) => job.status === 'queued' || job.status === 'running')
+  }
+
+  /** Local jobs the queue does not own yet, oldest first. */
+  function pendingJobs() {
+    return activeJobs()
+      .filter((job) => !job.remoteId && job.submit && job.submit.kind === 'queue')
+      .sort((a, b) => a.createdAt - b.createdAt)
+  }
+
+  /** Jobs the queue already owns; these are the ones we poll. */
+  function inflightJobs() {
+    return activeJobs().filter((job) => Boolean(job.remoteId))
+  }
+
+  function deadlineExceeded(job) {
+    return Date.now() - job.createdAt > cfg.imageTimeoutMs
+  }
+
+  function timeoutNote() {
+    return `等了 ${Math.round(cfg.imageTimeoutMs / 60000)} 分钟还没拿到结果`
+  }
+
+  function finishJob(job, status, error) {
+    job.status = status
+    job.error = error || ''
+    job.finishedAt = Date.now()
+    job.submit = null
+    pruneJobs()
+  }
+
+  /**
+   * Progress comes straight from the queue; a queued task also reports how many
+   * are ahead of it, which is the only honest thing we can show while waiting.
+   */
   function jobView(job) {
     const now = Date.now()
-    const queueIndex = queue.indexOf(job.id)
+    const localIndex = pendingJobs().indexOf(job)
     return {
       id: job.id,
       kind: job.kind,
@@ -907,14 +1261,18 @@ export function apply(ctx, config) {
       createdAt: job.createdAt,
       startedAt: job.startedAt || null,
       finishedAt: job.finishedAt || null,
-      elapsedSeconds:
-        job.status === 'running' && job.startedAt
-          ? Math.round((now - job.startedAt) / 1000)
-          : job.startedAt && job.finishedAt
-            ? Math.round((job.finishedAt - job.startedAt) / 1000)
-            : 0,
+      elapsedSeconds: job.startedAt
+        ? Math.round(((job.finishedAt || now) - job.startedAt) / 1000)
+        : 0,
       waitedSeconds: Math.round((now - job.createdAt) / 1000),
-      queuePosition: job.status === 'queued' ? queueIndex + (running ? 2 : 1) : 0,
+      queuePosition: job.queuePosition || (localIndex >= 0 ? localIndex + 1 : 0),
+      percent: job.percent ?? 0,
+      etaSeconds: job.etaSeconds || 0,
+      remoteId: job.remoteId || '',
+      remoteStatus: job.remoteStatus || '',
+      note: job.note || '',
+      canceled: Boolean(job.canceled),
+      mode: cfg.imageApiMode,
       request: job.request,
       items: job.items || [],
       error: job.error || '',
@@ -929,17 +1287,261 @@ export function apply(ctx, config) {
     for (const stale of finished.slice(JOB_HISTORY_LIMIT)) jobs.delete(stale.id)
   }
 
-  async function pump() {
-    if (running) return
-    const id = queue.shift()
-    if (id === undefined) return
-    const job = jobs.get(id)
-    if (!job || !job._work) return
-    running = true
+  /**
+   * Only unfinished queue jobs are written down: a finished one lives in the
+   * gallery, and a blocking one cannot be resumed anyway (its response is gone).
+   * Writes are serialised and go through a temp file, because two overlapping
+   * snapshots or a half-written file would both corrupt the restart state.
+   */
+  let persistChain = Promise.resolve()
+
+  function persistJobs() {
+    const run = async () => {
+      const keep = [...jobs.values()].filter(
+        (job) => (job.status === 'queued' || job.status === 'running') && (!job.submit || job.submit.kind === 'queue'),
+      )
+      const payload = {
+        version: 1,
+        updatedAt: Date.now(),
+        jobs: keep.map((job) => ({
+          id: job.id,
+          kind: job.kind,
+          label: job.label,
+          createdAt: job.createdAt,
+          status: job.status,
+          request: job.request,
+          remoteId: job.remoteId || '',
+          idemKey: job.idemKey || '',
+          // A submit body is kept only when it is small (JSON, no images).
+          submit:
+            job.submit && job.submit.persist
+              ? {
+                  path: job.submit.path,
+                  headers: job.submit.headers,
+                  body: job.submit.body.toString('base64'),
+                }
+              : null,
+        })),
+      }
+      try {
+        await mkdir(SETTINGS_DIR, { recursive: true })
+        await writeFile(`${JOBS_FILE}.tmp`, JSON.stringify(payload, null, 2), 'utf8')
+        await rename(`${JOBS_FILE}.tmp`, JOBS_FILE)
+      } catch {
+        /* an unwritable state file must never break generation */
+      }
+    }
+    persistChain = persistChain.then(run, run)
+    return persistChain
+  }
+
+  /** Bring back what was in flight when DSH last stopped. */
+  async function restoreJobs() {
+    let parsed
+    try {
+      parsed = JSON.parse(await readFile(JOBS_FILE, 'utf8'))
+    } catch {
+      return
+    }
+    const list = Array.isArray(parsed?.jobs) ? parsed.jobs : []
+    const knownRemoteIds = new Set([...jobs.values()].map((job) => job.remoteId).filter(Boolean))
+    for (const saved of list) {
+      if (!saved || typeof saved.id !== 'string' || jobs.has(saved.id)) continue
+      const remoteId = saved.remoteId ? String(saved.remoteId) : ''
+      // Two entries pointing at the same task would download the same result twice.
+      if (remoteId && knownRemoteIds.has(remoteId)) continue
+      const job = {
+        id: saved.id,
+        kind: saved.kind === 'image2image' ? 'image2image' : 'text2image',
+        label: String(saved.label || ''),
+        createdAt: Number(saved.createdAt) || Date.now(),
+        status: 'queued',
+        request: saved.request && typeof saved.request === 'object' ? saved.request : {},
+        remoteId,
+        idemKey: saved.idemKey ? String(saved.idemKey) : '',
+      }
+      if (saved.submit && typeof saved.submit.body === 'string') {
+        job.submit = {
+          kind: 'queue',
+          path: String(saved.submit.path || ''),
+          headers: saved.submit.headers && typeof saved.submit.headers === 'object' ? saved.submit.headers : {},
+          body: Buffer.from(saved.submit.body, 'base64'),
+          persist: true,
+        }
+      }
+      if (!job.remoteId && !job.submit) {
+        job.status = 'failed'
+        job.error = 'DSH 上次关闭时这次请求还没提交，请重新发起'
+        job.finishedAt = Date.now()
+      }
+      if (job.remoteId) {
+        job.note = '接着上次的进度继续等'
+        knownRemoteIds.add(job.remoteId)
+      }
+      jobs.set(job.id, job)
+    }
+  }
+
+  /** A task the queue still owns. A queued one can be cancelled, a running one cannot. */
+  async function cancelQueueJob(remoteId) {
+    const res = await requestQueue('POST', `/v1/images/jobs/${encodeURIComponent(remoteId)}/cancel`, {
+      timeoutMs: QUEUE.statusTimeoutMs,
+    })
+    if (res.status >= 200 && res.status < 300) return true
+    if (res.status === 409) return false
+    throw new Error(describeServiceError(res.body.toString('utf8')) || `取消返回 HTTP ${res.status}`)
+  }
+
+  /**
+   * Convert a finished queue task into gallery entries. A failed download is
+   * retried on later ticks: the image exists, so throwing it away over one bad
+   * read would waste the whole run.
+   */
+  async function markSucceeded(job, state) {
+    try {
+      const result = await collectQueueItems(job, state)
+      job.items = result.items
+      job.savedTo = result.savedTo
+      job.percent = 100
+      job.status = 'done'
+    } catch (error) {
+      job.downloadFailures = (job.downloadFailures || 0) + 1
+      if (error.gone || job.downloadFailures >= QUEUE.maxStatusFailures) {
+        return finishJob(job, 'failed', error.message || '下载结果失败')
+      }
+      // Stay in flight so the next tick tries the download again.
+      job.status = 'running'
+      job.note = `图已经生成好，取图没成功（第 ${job.downloadFailures} 次），稍后重试`
+      return undefined
+    }
+    job.finishedAt = Date.now()
+    job.submit = null
+    job.note = ''
+    pruneJobs()
+    return undefined
+  }
+
+  /** One status read per active task per tick. */
+  async function readBack(job) {
+    let state
+    try {
+      state = await fetchQueueJob(job.remoteId)
+      job.statusFailures = 0
+    } catch (error) {
+      if (error.gone) return finishJob(job, 'failed', `队列里查不到这个任务了：${error.message}`)
+      job.statusFailures = (job.statusFailures || 0) + 1
+      if (job.statusFailures >= QUEUE.maxStatusFailures) {
+        return finishJob(job, 'failed', `一直读不到任务进度：${error.message}`)
+      }
+      job.note = `暂时读不到任务进度（第 ${job.statusFailures} 次），继续试`
+      return undefined
+    }
+    const progress = state.progress && typeof state.progress === 'object' ? state.progress : {}
+    const status = String(state.status || '')
+    job.remoteStatus = status
+    job.percent = clampInt(progress.percent, 0, 100, 0)
+    job.etaSeconds = Math.max(0, Math.round(Number(progress.eta_seconds) || 0))
+    const ahead = Number(progress.queue_position)
+    job.queuePosition = status === 'queued' && Number.isFinite(ahead) && ahead > 0 ? Math.round(ahead) : 0
+
+    if (status === 'succeeded') return markSucceeded(job, state)
+    if (status === 'failed') {
+      return finishJob(job, 'failed', state.error ? String(state.error) : '这次没成功，换个描述再试一次')
+    }
+    if (status === 'canceled') return finishJob(job, 'failed', '任务已取消')
+    job.status = status === 'running' ? 'running' : 'queued'
+    if (job.status === 'running' && !job.startedAt) job.startedAt = Date.now()
+    job.note = ''
+    return undefined
+  }
+
+  /** The deadline passed: stop following the task and free its slot. */
+  async function abandonJob(job) {
+    if (job.remoteId && job.remoteStatus !== 'running') {
+      try {
+        await cancelQueueJob(job.remoteId)
+      } catch {
+        /* the deadline already decided; a failed cancel must not mask it */
+      }
+    }
+    finishJob(job, 'failed', timeoutNote())
+  }
+
+  /** Re-submit with the same Idempotency-Key so a retry cannot produce a second image. */
+  async function submitPending() {
+    const pending = pendingJobs()
+    if (pending.length === 0) return
+    let slots = Math.max(0, QUEUE.maxPending - inflightJobs().length)
+    for (const job of pending) {
+      if (job.status !== 'queued') continue
+      if (slots <= 0) {
+        job.note = `本地最多同时跟进 ${QUEUE.maxPending} 个任务，等前面的完成`
+        continue
+      }
+      if (deadlineExceeded(job)) {
+        finishJob(job, 'failed', timeoutNote())
+        continue
+      }
+      if (job.notBefore && Date.now() < job.notBefore) continue
+      slots -= 1
+      try {
+        const accepted = await submitQueueJob(job)
+        job.remoteId = String(accepted.id)
+        job.remoteStatus = String(accepted.status || 'queued')
+        job.status = 'queued'
+        job.attempts = 0
+        job.notBefore = 0
+        job.note = ''
+        job.submit = null
+        // The user may have cancelled while this request was in flight; the
+        // queue already owns the task, so cancel it there as well.
+        if (job.cancelRequested) {
+          try {
+            await cancelQueueJob(job.remoteId)
+          } catch {
+            /* the local cancel already happened; nothing else to do */
+          }
+          job.canceled = true
+          finishJob(job, 'failed', '已取消')
+          continue
+        }
+        void persistJobs()
+      } catch (error) {
+        // A 4xx is a parameter problem: the same body would fail again. Anything
+        // else (transport hiccup, 5xx, unreadable answer) deserves a retry.
+        if (error instanceof HttpError && error.status >= 400 && error.status < 500) {
+          finishJob(job, 'failed', error.message)
+          continue
+        }
+        // A full queue is a wait, not a failure: it must not spend the retry budget.
+        if (error.retryAfterMs) {
+          job.notBefore = Date.now() + error.retryAfterMs
+          job.note = `队列已满，约 ${Math.max(1, Math.round(error.retryAfterMs / 1000))} 秒后自动重试`
+          continue
+        }
+        job.attempts = (job.attempts || 0) + 1
+        const wait = Math.min(60000, 2000 * Math.pow(2, job.attempts))
+        job.notBefore = Date.now() + wait
+        job.note = `${error.message}（约 ${Math.max(1, Math.round(wait / 1000))} 秒后自动重试）`
+        if (job.attempts >= QUEUE.maxSubmitAttempts) finishJob(job, 'failed', `提交一直没成功：${error.message}`)
+      }
+    }
+  }
+
+  /** `sync` mode keeps the old blocking call, run away from the request thread. */
+  async function runBlockingJob(job) {
     job.status = 'running'
+    job.blocking = true
     job.startedAt = Date.now()
     try {
-      const result = await job._work()
+      const response = await postImageService(job.submit.path, { body: job.submit.body, headers: job.submit.headers }, cfg.imageTimeoutMs)
+      if (job.cancelRequested) {
+        // The generation already ran, but the user asked not to keep it.
+        job.canceled = true
+        finishJob(job, 'failed', '已取消（这张图已经生成，未保存）')
+        return
+      }
+      const result = await collectItems(response, job.submit.request)
       job.items = result.items
       job.savedTo = result.savedTo
       job.status = 'done'
@@ -948,18 +1550,49 @@ export function apply(ctx, config) {
       job.error = error.message || '生成失败'
     } finally {
       job.finishedAt = Date.now()
-      delete job._work
-      running = false
+      job.blocking = false
+      job.submit = null
       pruneJobs()
-      void pump()
+      void persistJobs()
     }
   }
 
-  function enqueue(job, work) {
-    job._work = work
+  /**
+   * One tick: read back what the queue owns, then submit what it may take.
+   * Status reads run concurrently so one slow answer cannot stall the rest, and
+   * a job that finished while the deadline passed is still collected — the
+   * work is done on the model host, throwing it away helps nobody.
+   */
+  async function tick() {
+    if (ticking) return
+    ticking = true
+    try {
+      const inFlight = inflightJobs()
+      await Promise.allSettled(
+        inFlight.map(async (job) => {
+          const expired = deadlineExceeded(job)
+          await readBack(job)
+          if (expired && (job.status === 'queued' || job.status === 'running')) await abandonJob(job)
+        }),
+      )
+      if (cfg.imageApiMode === 'queue') await submitPending()
+      lastQueueError = ''
+    } catch (error) {
+      lastQueueError = error.message || String(error)
+    } finally {
+      ticking = false
+      void persistJobs()
+    }
+  }
+
+  function enqueueJob(job) {
     jobs.set(job.id, job)
-    queue.push(job.id)
-    void pump()
+    if (job.submit && job.submit.kind === 'sync') {
+      void runBlockingJob(job)
+      return jobView(job)
+    }
+    void persistJobs()
+    void tick()
     return jobView(job)
   }
 
@@ -983,31 +1616,44 @@ export function apply(ctx, config) {
       prompt,
       size: bounds.size,
       n: batch,
-      response_format: 'url',
     }
+    // The queue always answers with its own result URL; only the blocking
+    // service still honours `response_format`.
+    if (cfg.imageApiMode !== 'queue') payload.response_format = 'url'
     if (seed !== undefined) payload.seed = seed
 
+    const id = newJobId()
+    const idemKey = `glow-${id}`
     const job = {
-      id: newJobId(),
+      id,
       kind: 'text2image',
       status: 'queued',
       label: prompt.slice(0, 40),
       createdAt: Date.now(),
+      idemKey,
       request: { mode: 'text2image', prompt, size: bounds.size, batch, seed: seed ?? null, presetId: '' },
     }
 
-    return enqueue(job, async () => {
-      const response = await postImageService(
-        '/v1/images/generations',
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: Buffer.from(JSON.stringify(payload), 'utf8'),
-        },
-        cfg.imageTimeoutMs,
-      )
-      return collectItems(response, { mode: 'text2image', prompt, size: bounds.size })
-    })
+    if (cfg.imageApiMode === 'queue') {
+      job.submit = {
+        kind: 'queue',
+        path: '/v1/images/jobs',
+        headers: { 'content-type': 'application/json', 'idempotency-key': idemKey },
+        body: Buffer.from(JSON.stringify(payload), 'utf8'),
+        // Small enough to survive a restart, so the task can be re-submitted
+        // under the same idempotency key.
+        persist: true,
+      }
+    } else {
+      job.submit = {
+        kind: 'sync',
+        path: '/v1/images/generations',
+        headers: { 'content-type': 'application/json' },
+        body: Buffer.from(JSON.stringify(payload), 'utf8'),
+        request: { mode: 'text2image', prompt, size: bounds.size },
+      }
+    }
+    return enqueueJob(job)
   }
 
   async function runEdit(body) {
@@ -1039,12 +1685,18 @@ export function apply(ctx, config) {
     const images = refs.map((ref) => decodeDataUrl(ref.dataUrl))
     const preset = presetById(body?.presetId)
 
+    const id = newJobId()
+    const idemKey = `glow-${id}`
     const job = {
-      id: newJobId(),
+      id,
       kind: 'image2image',
       status: 'queued',
       label: (preset ? preset.label + ' · ' : '') + composed.prompt.slice(0, 36),
       createdAt: Date.now(),
+      idemKey,
+      // Reference bytes are held in memory only; an edit that was never submitted
+      // cannot be rebuilt after a restart, and that is said out loud then.
+      refImages: images,
       request: {
         mode: 'image2image',
         prompt: composed.prompt,
@@ -1058,38 +1710,47 @@ export function apply(ctx, config) {
       },
     }
 
-    return enqueue(job, async () => {
-      const multipart = buildMultipart(
-        {
+    const fields = { prompt: composed.prompt, size: bounds.size }
+    if (cfg.imageApiMode !== 'queue') fields.response_format = 'url'
+    if (seed !== undefined) fields.seed = String(seed)
+    const multipart = buildMultipart(
+      fields,
+      images.map((decoded, index) => ({
+        name: 'image',
+        filename: `reference-${index + 1}.${
+          decoded.mediaType === 'image/jpeg' ? 'jpg' : decoded.mediaType === 'image/webp' ? 'webp' : 'png'
+        }`,
+        contentType: decoded.mediaType,
+        bytes: decoded.bytes,
+      })),
+    )
+
+    if (cfg.imageApiMode === 'queue') {
+      job.submit = {
+        kind: 'queue',
+        path: '/v1/images/jobs/edits',
+        headers: { 'content-type': multipart.contentType, 'idempotency-key': idemKey },
+        body: multipart.body,
+        persist: false,
+      }
+    } else {
+      job.submit = {
+        kind: 'sync',
+        path: '/v1/images/edits',
+        headers: { 'content-type': multipart.contentType },
+        body: multipart.body,
+        request: {
+          mode: 'image2image',
           prompt: composed.prompt,
           size: bounds.size,
-          response_format: 'url',
-          seed: seed !== undefined ? String(seed) : undefined,
+          references: images.length,
+          presetId: composed.presetId,
+          note: noteText,
+          refImages: images,
         },
-        images.map((decoded, index) => ({
-          name: 'image',
-          filename: `reference-${index + 1}.${
-            decoded.mediaType === 'image/jpeg' ? 'jpg' : decoded.mediaType === 'image/webp' ? 'webp' : 'png'
-          }`,
-          contentType: decoded.mediaType,
-          bytes: decoded.bytes,
-        })),
-      )
-      const response = await postImageService(
-        '/v1/images/edits',
-        { method: 'POST', headers: { 'content-type': multipart.contentType }, body: multipart.body },
-        cfg.imageTimeoutMs,
-      )
-      return collectItems(response, {
-        mode: 'image2image',
-        prompt: composed.prompt,
-        size: bounds.size,
-        references: images.length,
-        presetId: composed.presetId,
-        note: noteText,
-        refImages: images,
-      })
-    })
+      }
+    }
+    return enqueueJob(job)
   }
 
   // ----------------------------------------------------------- prompt assist
@@ -1353,7 +2014,7 @@ export function apply(ctx, config) {
       }
       if (sub === 'capabilities') {
         const [image, llm] = await Promise.all([
-          probeImageService().catch((e) => ({ ok: false, error: e.message })),
+          probeImageService().catch((e) => ({ ok: false, mode: cfg.imageApiMode, error: e.message })),
           probeLlmService(),
         ])
         sendJson(res, 200, {
@@ -1362,11 +2023,14 @@ export function apply(ctx, config) {
           limits: IMAGE_LIMITS,
           imageTimeoutMs: cfg.imageTimeoutMs,
           outputDir,
-          queueLength: queue.length,
-          running,
+          queueLength: pendingJobs().length,
+          running: activeJobs().length > 0,
           fixed: { steps: IMAGE_LIMITS.steps, guidance: IMAGE_LIMITS.guidance, negativePrompt: 'ignored' },
-          baseUrls: { image: cfg.imageBaseUrl, llm: cfg.llmBaseUrl },
+          mode: cfg.imageApiMode,
+          baseUrls: { image: cfg.imageBaseUrl, sync: cfg.imageSyncBaseUrl, llm: cfg.llmBaseUrl },
+          queuePolicy: { pollIntervalMs: QUEUE.pollIntervalMs, maxPending: QUEUE.maxPending, retentionDays: QUEUE.retentionDays },
           lastBusyNote,
+          lastQueueError,
         })
         return
       }
@@ -1408,9 +2072,11 @@ export function apply(ctx, config) {
         sendJson(res, 200, {
           active: active.map(jobView),
           recent: finished.slice(0, 40).map(jobView),
-          running,
-          queueLength: queue.length,
+          running: activeJobs().length > 0,
+          queueLength: pendingJobs().length,
+          mode: cfg.imageApiMode,
           lastBusyNote,
+          lastQueueError,
         })
         return
       }
@@ -1418,7 +2084,12 @@ export function apply(ctx, config) {
         const id = decodeURIComponent(sub.slice('jobs/'.length))
         const job = jobs.get(id)
         if (!job) throw new HttpError(404, '任务不存在或已被清理')
-        sendJson(res, 200, { job: jobView(job), queueLength: queue.length, lastBusyNote })
+        sendJson(res, 200, {
+          job: jobView(job),
+          queueLength: pendingJobs().length,
+          lastBusyNote,
+          lastQueueError,
+        })
         return
       }
       if (sub.startsWith('file/')) {
@@ -1462,13 +2133,24 @@ export function apply(ctx, config) {
       }
       if (sub === 'settings/test') {
         const body = await readJsonBody(req)
+        const mode = resolveMode(body?.imageApiMode, cfg.imageApiMode)
         const imageUrl = normalizeServiceUrl(body?.imageBaseUrl, cfg.imageBaseUrl)
+        const syncUrl = normalizeServiceUrl(body?.imageSyncBaseUrl, cfg.imageSyncBaseUrl)
         const llmUrl = normalizeServiceUrl(body?.llmBaseUrl, cfg.llmBaseUrl)
+        // Probe the address the chosen mode will actually use, not the other one.
         const [image, llm] = await Promise.all([
-          probeImageService(imageUrl).catch((error) => ({ ok: false, error: error.message })),
+          probeImageService(mode === 'sync' ? syncUrl : imageUrl, mode, syncUrl).catch((error) => ({
+            ok: false,
+            mode,
+            error: error.message,
+          })),
           probeLlmService(llmUrl),
         ])
-        sendJson(res, 200, { image, llm, tested: { imageBaseUrl: imageUrl, llmBaseUrl: llmUrl } })
+        sendJson(res, 200, {
+          image,
+          llm,
+          tested: { mode, imageBaseUrl: imageUrl, imageSyncBaseUrl: syncUrl, llmBaseUrl: llmUrl },
+        })
         return
       }
       if (sub === 'generate') {
@@ -1492,6 +2174,47 @@ export function apply(ctx, config) {
           if (job.status === 'done' || job.status === 'failed') jobs.delete(job.id)
         }
         sendJson(res, 200, { cleared: true })
+        return
+      }
+      if (sub === 'jobs/cancel') {
+        const body = await readJsonBody(req)
+        const job = jobs.get(String(body?.id || ''))
+        if (!job) throw new HttpError(404, '任务不存在或已被清理')
+        if (job.status === 'done' || job.status === 'failed') {
+          sendJson(res, 200, { job: jobView(job), canceled: false, reason: '这个任务已经结束了' })
+          return
+        }
+        // Set before the first await: a submit already in flight re-checks this.
+        job.cancelRequested = true
+        if (job.blocking) {
+          // A blocking call cannot be interrupted; the result is dropped instead.
+          sendJson(res, 200, { job: jobView(job), canceled: true, reason: '已经开跑，做完不保存' })
+          return
+        }
+        if (!job.remoteId) {
+          // Never submitted: dropping it locally is a complete cancel.
+          job.canceled = true
+          finishJob(job, 'failed', '已取消（还没提交到队列）')
+          void persistJobs()
+          sendJson(res, 200, { job: jobView(job), canceled: true })
+          return
+        }
+        let canceled = false
+        try {
+          canceled = await cancelQueueJob(job.remoteId)
+        } catch (error) {
+          job.cancelRequested = false
+          throw new HttpError(502, `取消没成功：${error.message}`)
+        }
+        if (!canceled) {
+          // The service cannot interrupt a generation that already started.
+          job.cancelRequested = false
+          throw new HttpError(409, '已经开始生成了，只能等它跑完（服务端不支持中断）')
+        }
+        job.canceled = true
+        finishJob(job, 'failed', '已取消')
+        void persistJobs()
+        sendJson(res, 200, { job: jobView(job), canceled: true })
         return
       }
       if (sub === 'favorites') {
@@ -1577,6 +2300,26 @@ export function apply(ctx, config) {
 
     throw new HttpError(405, `不支持的请求方法：${method}`)
   }
+
+  /**
+   * The queue's own bookkeeping outlives a browser tab and even this plugin:
+   * unfinished task ids are read back on start, then polled until they finish.
+   * The interval only reads short status responses — the long work happens on
+   * the model host.
+   */
+  ctx.effect(
+    () => {
+      void restoreJobs()
+        .catch((error) => {
+          lastQueueError = error.message || String(error)
+        })
+        .then(() => tick())
+      const handle = setInterval(() => void tick(), QUEUE.pollIntervalMs)
+      if (typeof handle.unref === 'function') handle.unref()
+      return () => clearInterval(handle)
+    },
+    'glow: image job queue poller',
+  )
 
   ctx.effect(
     () =>

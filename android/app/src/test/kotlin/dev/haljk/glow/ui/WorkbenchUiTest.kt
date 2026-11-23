@@ -94,7 +94,8 @@ class WorkbenchUiTest {
         compose.waitForIdle()
 
         compose.onNodeWithText("模型服务").assertIsDisplayed()
-        compose.onNodeWithText("出图服务地址").assertIsDisplayed()
+        compose.onNodeWithText("队列地址").assertIsDisplayed()
+        compose.onNodeWithText("同步").assertExists()
         compose.onNodeWithText("提示词服务地址").assertIsDisplayed()
         compose.onNodeWithText("保存并生效").assertIsDisplayed()
     }

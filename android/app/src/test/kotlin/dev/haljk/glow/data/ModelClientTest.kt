@@ -27,7 +27,7 @@ class ModelClientTest {
         server = MockWebServer()
         server.start()
         val base = server.url("/").toString().trimEnd('/')
-        settings = Settings(imageBaseUrl = base, llmBaseUrl = base)
+        settings = Settings(imageBaseUrl = base, imageSyncBaseUrl = base, llmBaseUrl = base)
     }
 
     @After
@@ -36,6 +36,13 @@ class ModelClientTest {
     }
 
     private fun client() = ModelClient(settings, busyRetryDelayMs = 0)
+    /** The probe answers differently per mode, so tests say which one they mean. */
+    private fun client(mode: String) =
+        ModelClient(
+            // Both modes must point at the fake server; only the endpoint differs.
+            settings.copy(imageApiMode = mode, imageSyncBaseUrl = settings.imageBaseUrl),
+            busyRetryDelayMs = 0,
+        )
 
     private fun pngBase64(): String = Base64.getEncoder().encodeToString(
         byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A),
@@ -193,9 +200,9 @@ class ModelClientTest {
     // ------------------------------------------------------------------ probe
 
     @Test
-    fun `probe reports the model name when the service answers`() {
+    fun `probe reports the model name when the sync service answers`() {
         server.enqueue(MockResponse().setBody("""{"ok":true,"model":"minimax-h3-image"}"""))
-        val result = client().probeImage()
+        val result = client(mode = Settings.MODE_SYNC).probeImage()
         assertTrue(result.ok)
         assertEquals("minimax-h3-image", result.detail)
         assertEquals("/health", server.takeRequest().path)

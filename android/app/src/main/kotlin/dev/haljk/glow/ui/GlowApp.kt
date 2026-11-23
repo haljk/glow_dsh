@@ -161,13 +161,13 @@ private fun WorkbenchScreen(
             requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
-    LaunchedEffect(job?.status) {
+    LaunchedEffect(job?.stage) {
         val snapshot = job ?: return@LaunchedEffect
-        if (snapshot.status != JobRegistry.Status.RUNNING) vm.onJobFinished()
+        if (!snapshot.isActive) vm.onJobFinished()
     }
 
     val selectedPreset: Preset? = vm.presetId?.let { id -> vm.presets.firstOrNull { it.id == id } }
-    val busy = job?.status == JobRegistry.Status.RUNNING
+    val busy = job?.isActive == true
     val blocked = vm.submitBlockedReason()
 
     Scaffold(
@@ -288,8 +288,11 @@ private fun WorkbenchScreen(
                             job!!,
                             onDismiss = { JobRegistry.clear() },
                             onGiveUp = {
-                                JobRegistry.clear()
-                                vm.post("服务端仍会跑完，结果会进「以前做的」")
+                                // Ask the service to give the queue's slot back; if the
+                                // model already started, cancelling is refused and the
+                                // banner keeps running.
+                                JobRegistry.requestCancel()
+                                vm.post("如果还在排队，会取消；已经开跑就等它做完")
                             },
                         )
                     }

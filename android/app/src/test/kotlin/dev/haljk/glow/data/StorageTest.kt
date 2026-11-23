@@ -37,8 +37,9 @@ class StorageTest {
 
     @Test
     fun `timeouts are clamped to a sane range`() {
-        assertEquals(30, Settings(imageTimeoutSeconds = 1).normalised().imageTimeoutSeconds)
-        assertEquals(3600, Settings(imageTimeoutSeconds = 99_999).normalised().imageTimeoutSeconds)
+        // A queued 2K edit can wait before it even starts, so the floor moved up.
+        assertEquals(60, Settings(imageTimeoutSeconds = 1).normalised().imageTimeoutSeconds)
+        assertEquals(7200, Settings(imageTimeoutSeconds = 99_999).normalised().imageTimeoutSeconds)
         assertEquals(10, Settings(llmTimeoutSeconds = 0).normalised().llmTimeoutSeconds)
         assertEquals(600, Settings(llmTimeoutSeconds = 5_000).normalised().llmTimeoutSeconds)
     }

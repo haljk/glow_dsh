@@ -21,6 +21,17 @@ data class JobRequest(
     val count: Int,
     val referenceUris: List<String>,
     val summary: String,
+    /**
+     * Set when the service is picking up a task it already submitted — after a
+     * restart, or after the user came back to an app that had been killed. The
+     * queue still owns the task, so there is nothing to submit.
+     */
+    val resumeRemoteId: String = "",
+    /**
+     * Passed to the queue so a retried submit cannot produce a second image. Empty
+     * means "make one up when submitting".
+     */
+    val idempotencyKey: String = "",
 ) {
     val isEdit: Boolean get() = mode == MODE_EDIT
 
@@ -34,6 +45,8 @@ data class JobRequest(
         put("count", count)
         put("refUris", JSONArray(referenceUris))
         put("summary", summary)
+        put("resumeRemoteId", resumeRemoteId)
+        put("idempotencyKey", idempotencyKey)
     }.toString()
 
     companion object {
@@ -53,6 +66,8 @@ data class JobRequest(
                 count = json.optInt("count", 1),
                 referenceUris = buildList { for (i in 0 until array.length()) add(array.optString(i)) },
                 summary = json.optString("summary", ""),
+                resumeRemoteId = json.optString("resumeRemoteId", ""),
+                idempotencyKey = json.optString("idempotencyKey", ""),
             )
         }.getOrNull()
     }

@@ -23,17 +23,64 @@ class RefImage(val bytes: ByteArray, val mimeType: String, val fileName: String)
 
 class ModelException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
+/** The queue accepted the task but asked us to wait before trying again (429). */
+class QueueBusy(message: String, val retryAfterMs: Long) : Exception(message)
+
+/** The queue does not know this task any more: it was cleaned up, or never existed. */
+class QueueGone(message: String) : Exception(message)
+
+/** Worth another try: transport hiccup, 5xx, or an unreadable answer. */
+class QueueRetriable(message: String, cause: Throwable? = null) : Exception(message, cause)
+
+/** The request itself is wrong; sending it again would fail the same way. */
+class QueueRejected(message: String) : Exception(message)
+
+/** What the queue says about one task. */
+data class QueueState(
+    val id: String,
+    val status: String,
+    val percent: Int,
+    val etaSeconds: Int,
+    /** 1 means "next"; only meaningful while `status == queued`. */
+    val queuePosition: Int,
+    val error: String,
+    val data: List<QueueResultItem>,
+) {
+    val isTerminal: Boolean get() = status == STATUS_SUCCEEDED || status == STATUS_FAILED || status == STATUS_CANCELED
+
+    companion object {
+        const val STATUS_QUEUED = "queued"
+        const val STATUS_RUNNING = "running"
+        const val STATUS_SUCCEEDED = "succeeded"
+        const val STATUS_FAILED = "failed"
+        const val STATUS_CANCELED = "canceled"
+    }
+}
+
+/** One finished image as the queue describes it. The bytes are fetched separately. */
+data class QueueResultItem(
+    val url: String,
+    val seed: Long,
+    val size: String,
+    val seconds: Double,
+    val revisedPrompt: String,
+)
+
 /**
  * Client for the two local model services.
  *
- * The timeouts here are deliberately large: an edit can take 380 seconds, and
- * OkHttp's default read timeout is 10 seconds, which would kill every real
- * request. The desktop version hit exactly this class of bug with Node's fetch,
- * which silently caps response headers at 300 seconds.
+ * Two shapes for the image side. The queue ([Settings.MODE_QUEUE]) takes a task
+ * and answers immediately, so every request here is short; the blocking endpoint
+ * ([Settings.MODE_SYNC]) needs a timeout as long as one generation, which is
+ * exactly the fragility the queue was built to remove.
+ *
+ * The sync timeouts are still generous because an edit can take 400 seconds, and
+ * OkHttp's default read timeout is 10 seconds. The desktop version hit the same
+ * class of bug with Node's fetch, which silently caps response headers at 300 s.
  */
 class ModelClient(
     private val settings: Settings,
-    /** Back-off between 409 retries; overridable so tests need not wait 20 s. */
+    /** Back-off between 409 retries on the blocking endpoint; tests pass 0. */
     private val busyRetryDelayMs: Long = BUSY_RETRY_DELAY_MS,
 ) {
 
@@ -45,10 +92,17 @@ class ModelClient(
         .retryOnConnectionFailure(true)
         .build()
 
-    /** Downloading a finished image needs none of the long budget. */
+    /** Queue calls are all short: submit, one status read, one download. */
+    private val queueClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(SUBMIT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
+
     private val downloadClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(RESULT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .build()
 
     private val llmClient: OkHttpClient = OkHttpClient.Builder()
@@ -58,12 +112,51 @@ class ModelClient(
 
     // ---------------------------------------------------------------- health
 
-    fun probeImage(): ProbeResult = probe(settings.imageEndpoint, imageClient)
-    fun probeLlm(): ProbeResult = probe(settings.llmEndpoint, llmClient)
+    /**
+     * Queue mode reports queue depth and whether the queue's own upstream is up; a
+     * degraded queue still accepts tasks, so "ok" means "we can submit", not "the
+     * model is warm".
+     */
+    fun probeImage(): ProbeResult = try {
+        if (settings.isQueueMode) probeQueue() else probeSync()
+    } catch (error: IOException) {
+        ProbeResult(false, "连不上 ${settings.imageEndpoint}")
+    }
 
-    private fun probe(baseUrl: String, client: OkHttpClient): ProbeResult = try {
-        val request = Request.Builder().url("$baseUrl/health").get().build()
-        client.newCall(request).execute().use { response ->
+    private fun probeSync(): ProbeResult {
+        val request = Request.Builder().url("${settings.imageEndpoint}/health").get().build()
+        imageClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return ProbeResult(false, "HTTP ${response.code}")
+            val body = response.body?.string().orEmpty()
+            val model = runCatching { JSONObject(body).optString("model", "") }.getOrDefault("")
+            return ProbeResult(true, model.ifEmpty { "已连接" })
+        }
+    }
+
+    private fun probeQueue(): ProbeResult {
+        val request = Request.Builder().url("${settings.imageEndpoint}/health").get().build()
+        queueClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return ProbeResult(false, "HTTP ${response.code}")
+            val root = runCatching { JSONObject(response.body?.string().orEmpty()) }.getOrNull()
+                ?: return ProbeResult(false, "队列返回了无法解析的内容")
+            val upstream = root.optJSONObject("upstream")
+            val upstreamOk = upstream?.optBoolean("ok", true) ?: true
+            val depth = root.optJSONObject("queue")
+            val queued = depth?.optInt("queued", 0) ?: 0
+            val running = depth?.optInt("running", 0) ?: 0
+            // A degraded queue still queues; surfacing it as "down" would make the
+            // user chase a working service.
+            val detail = buildString {
+                append(if (upstreamOk) "队列已连接" else "队列在，但模型机没响应")
+                if (queued > 0 || running > 0) append("（进行中 $running，排队 $queued）")
+            }
+            return ProbeResult(true, detail)
+        }
+    }
+
+    fun probeLlm(): ProbeResult = try {
+        val request = Request.Builder().url("${settings.llmEndpoint}/health").get().build()
+        llmClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
                 ProbeResult(false, "HTTP ${response.code}")
             } else {
@@ -73,10 +166,203 @@ class ModelClient(
             }
         }
     } catch (error: IOException) {
-        ProbeResult(false, "连不上 $baseUrl")
+        ProbeResult(false, "连不上 ${settings.llmEndpoint}")
     }
 
-    // ------------------------------------------------------------ text to image
+    // ------------------------------------------------------- queue: submit
+
+    /**
+     * Submit a text-to-image job. Returns the queue's id; nothing is generated yet.
+     *
+     * The idempotency key is what makes a retry safe: the same key cannot produce a
+     * second image, so a submit that timed out after the service accepted it is not
+     * a lost job.
+     */
+    fun submitTextToImage(
+        prompt: String,
+        size: String,
+        count: Int,
+        seed: Long,
+        idempotencyKey: String,
+    ): QueueState {
+        val payload = JSONObject().apply {
+            put("prompt", prompt)
+            put("size", size)
+            put("n", count.coerceIn(1, 2))
+            put("seed", seed)
+        }
+        val request = Request.Builder()
+            .url("${settings.imageEndpoint}/v1/images/jobs")
+            .header("Idempotency-Key", idempotencyKey)
+            .post(payload.toString().toRequestBody(JSON_MEDIA))
+            .build()
+        return parseSubmitted(callQueue(request))
+    }
+
+    /** Submit an edit job. Same flow, multipart body with the references attached. */
+    fun submitEdit(
+        prompt: String,
+        size: String,
+        seed: Long,
+        references: List<RefImage>,
+        idempotencyKey: String,
+    ): QueueState {
+        val builder = MultipartBody.Builder().setType(MultipartBody.FORM)
+        builder.addFormDataPart("prompt", prompt)
+        builder.addFormDataPart("size", size)
+        builder.addFormDataPart("seed", seed.toString())
+        references.forEachIndexed { index, ref ->
+            builder.addFormDataPart(
+                "image",
+                ref.fileName.ifEmpty { "ref-${index + 1}.png" },
+                ref.bytes.toRequestBody(ref.mimeType.toMediaType()),
+            )
+        }
+        val request = Request.Builder()
+            .url("${settings.imageEndpoint}/v1/images/jobs/edits")
+            .header("Idempotency-Key", idempotencyKey)
+            .post(builder.build())
+            .build()
+        return parseSubmitted(callQueue(request))
+    }
+
+    // --------------------------------------------------------- queue: status
+
+    fun jobState(remoteId: String): QueueState {
+        val request = Request.Builder()
+            .url("${settings.imageEndpoint}/v1/images/jobs/$remoteId")
+            .get()
+            .build()
+        val response = callQueue(request)
+        val body = response.body
+        val status = response.code
+        if (status == 404) throw QueueGone("队列里查不到这个任务了")
+        if (status !in 200..299) {
+            val message = describeServiceError(body) ?: "查状态返回 HTTP $status"
+            if (status >= 500) throw QueueRetriable(message) else throw QueueRejected(message)
+        }
+        val root = runCatching { JSONObject(body) }.getOrElse { throw QueueRetriable("队列状态不是 JSON") }
+        return parseState(root)
+    }
+
+    /** Download one finished image. Results expire after a week, so a 404 is final. */
+    fun fetchResult(url: String): ByteArray = try {
+        val request = Request.Builder().url(url).get().build()
+        downloadClient.newCall(request).execute().use { response ->
+            if (response.code == 404) throw QueueGone("结果已过期（队列结果只保留 7 天）")
+            if (!response.isSuccessful) throw QueueRetriable("下载结果失败：HTTP ${response.code}")
+            response.body?.bytes() ?: throw QueueRetriable("下载结果失败：内容为空")
+        }
+    } catch (error: IOException) {
+        throw QueueRetriable("下载结果失败：${error.message}", error)
+    }
+
+    /**
+     * Ask the queue to drop a task.
+     *
+     * @return true when the queue accepted it; false when the task already started
+     *   (HTTP 409) — the model cannot be interrupted, so "cancel" stops being
+     *   possible at that point.
+     */
+    fun cancelJob(remoteId: String): Boolean {
+        val request = Request.Builder()
+            .url("${settings.imageEndpoint}/v1/images/jobs/$remoteId/cancel")
+            .post(EMPTY_BODY)
+            .build()
+        val response = callQueue(request)
+        if (response.code in 200..299) return true
+        if (response.code == 409) return false
+        throw QueueRejected(describeServiceError(response.body) ?: "取消返回 HTTP ${response.code}")
+    }
+
+    // ------------------------------------------------------------ queue glue
+
+    private class Reply(val code: Int, val body: String, val retryAfterMs: Long?)
+
+    /**
+     * One round trip. Only the answers that are the same everywhere are classified
+     * here (busy, retriable transport/5xx); 4xx is left to the caller because a 404
+     * means "gone" for a status read but "rejected" for a submit.
+     */
+    private fun callQueue(request: Request): Reply = try {
+        queueClient.newCall(request).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            if (response.code == 429) {
+                throw QueueBusy("队列已满（服务端最多 64 个任务），稍后自动重试", retryAfterMs(response.header("Retry-After")))
+            }
+            if (response.code == 408 || response.code >= 500) {
+                throw QueueRetriable(describeServiceError(text) ?: "队列服务返回 HTTP ${response.code}")
+            }
+            Reply(response.code, text, null)
+        }
+    } catch (error: IOException) {
+        throw QueueRetriable("连不上队列服务 ${settings.imageEndpoint}：${error.message}", error)
+    }
+
+    private fun parseSubmitted(reply: Reply): QueueState {
+        if (reply.code !in 200..299) {
+            // A 4xx on submit is a parameter problem: the same body fails again.
+            throw QueueRejected(describeServiceError(reply.body) ?: "提交返回 HTTP ${reply.code}")
+        }
+        val root = runCatching { JSONObject(reply.body) }.getOrElse {
+            throw QueueRetriable("队列服务返回了非 JSON 响应")
+        }
+        val id = root.optString("id", "")
+        if (id.isEmpty()) throw QueueRetriable("队列服务没有返回任务号，无法跟进")
+        return parseState(root)
+    }
+
+    private fun parseState(root: JSONObject): QueueState {
+        val progress = root.optJSONObject("progress")
+        val list = root.optJSONArray("data")
+        val items = buildList {
+            if (list != null) {
+                for (index in 0 until list.length()) {
+                    val entry = list.optJSONObject(index) ?: continue
+                    val url = entry.optString("url", "")
+                    if (url.isEmpty()) continue
+                    add(
+                        QueueResultItem(
+                            url = url,
+                            seed = entry.optLong("seed", 0L),
+                            size = entry.optString("size", ""),
+                            seconds = entry.optDouble("seconds", 0.0),
+                            revisedPrompt = entry.optString("revised_prompt", ""),
+                        ),
+                    )
+                }
+            }
+        }
+        val status = root.optString("status", QueueState.STATUS_QUEUED)
+        val ahead = progress?.optInt("queue_position", 0) ?: 0
+        return QueueState(
+            id = root.optString("id", ""),
+            status = status,
+            percent = (progress?.optInt("percent", 0) ?: 0).coerceIn(0, 100),
+            etaSeconds = (progress?.optInt("eta_seconds", 0) ?: 0).coerceAtLeast(0),
+            queuePosition = if (status == QueueState.STATUS_QUEUED && ahead > 0) ahead else 0,
+            error = root.optString("error", ""),
+            data = items,
+        )
+    }
+
+    /** Honour the delay the service asks for instead of one we invented. */
+    private fun retryAfterMs(header: String?): Long {
+        val seconds = header?.trim()?.toLongOrNull() ?: return DEFAULT_RETRY_AFTER_MS
+        if (seconds <= 0) return DEFAULT_RETRY_AFTER_MS
+        return (seconds * 1000).coerceIn(1_000, 300_000)
+    }
+
+    private fun describeServiceError(body: String): String? = runCatching {
+        val root = JSONObject(body)
+        root.optString("error").ifEmpty {
+            root.optString("detail").ifEmpty {
+                root.optJSONObject("error")?.optString("message").orEmpty()
+            }
+        }.take(160)
+    }.getOrNull()?.takeIf { it.isNotBlank() }
+
+    // ------------------------------------------------- blocking endpoint (sync)
 
     fun generate(prompt: String, size: String, count: Int, seed: Long): List<GeneratedImage> {
         val payload = JSONObject().apply {
@@ -92,8 +378,6 @@ class ModelClient(
             .build()
         return callImage(request)
     }
-
-    // -------------------------------------------------------------- edit / compose
 
     fun edit(
         prompt: String,
@@ -292,15 +576,23 @@ class ModelClient(
     /** Exposed so a test can prove the 10-second default was actually overridden. */
     fun imageReadTimeoutSeconds(): Long = imageClient.readTimeoutMillis.toLong() / 1000
 
+    /** Queue calls must never inherit the long blocking budget. */
+    fun queueReadTimeoutSeconds(): Long = queueClient.readTimeoutMillis.toLong() / 1000
+
     data class ProbeResult(val ok: Boolean, val detail: String)
 
     companion object {
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
+        private val EMPTY_BODY = ByteArray(0).toRequestBody(null)
 
         const val MODE_EXPAND = "expand"
         const val MODE_REFINE = "refine"
         const val MODE_VARIATIONS = "variations"
         const val MODE_EDIT = "edit-instruction"
+
+        const val SUBMIT_TIMEOUT_SECONDS = 30L
+        const val RESULT_TIMEOUT_SECONDS = 180L
+        const val DEFAULT_RETRY_AFTER_MS = 30_000L
 
         private const val MAX_BUSY_RETRIES = 3
         private const val BUSY_RETRY_DELAY_MS = 20_000L

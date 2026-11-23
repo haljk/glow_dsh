@@ -25,6 +25,7 @@ import dev.haljk.glow.data.JobRegistry
 import dev.haljk.glow.data.JobRequest
 import dev.haljk.glow.data.ModelClient
 import dev.haljk.glow.data.ModelException
+import dev.haljk.glow.data.PendingJobStore
 import dev.haljk.glow.data.Settings
 import dev.haljk.glow.data.SettingsStore
 import dev.haljk.glow.service.GenerationService
@@ -119,7 +120,7 @@ class GlowViewModel(
      * Read from the process-scoped registry rather than remembered locally: after
      * an Activity recreation a local flag would say "idle" while a job was running.
      */
-    var submitting by mutableStateOf(JobRegistry.current.value?.status == JobRegistry.Status.RUNNING)
+    var submitting by mutableStateOf(JobRegistry.current.value?.isActive == true)
         private set
 
     /** Which image the viewer is showing, if any. */
@@ -142,6 +143,41 @@ class GlowViewModel(
     init {
         refreshGallery()
         probeServices()
+        resumePendingJob()
+    }
+
+    /**
+     * The queue still owns whatever we submitted before the process died; the only
+     * thing that went missing is our memory of it. The task id is on disk, so the
+     * poll picks up where it stopped instead of paying for a second generation.
+     */
+    private fun resumePendingJob() {
+        if (JobRegistry.current.value?.isActive == true) return
+        val store = PendingJobStore(getApplication<Application>().filesDir)
+        val pending = store.load() ?: return
+        if (pending.remoteId.isEmpty()) return
+        val request = JobRequest(
+            mode = if (pending.isEdit) JobRequest.MODE_EDIT else JobRequest.MODE_TEXT,
+            prompt = pending.prompt,
+            note = pending.note,
+            presetId = pending.presetId ?: "",
+            size = pending.size,
+            seed = pending.seed,
+            count = pending.expected,
+            // The picker grants are gone after a restart, so a resumed edit keeps its
+            // result but not fresh reference copies. The comparison view then shows
+            // the result alone, which is honest.
+            referenceUris = emptyList(),
+            summary = pending.summary,
+            resumeRemoteId = pending.remoteId,
+            idempotencyKey = pending.idempotencyKey,
+        )
+        submitting = true
+        runCatching { GenerationService.start(getApplication(), request) }
+            .onFailure {
+                submitting = false
+                store.clear()
+            }
     }
 
     // -------------------------------------------------------------- settings
@@ -303,6 +339,9 @@ class GlowViewModel(
             count = count,
             referenceUris = refs.map { it.uri },
             summary = GenerationService.summarise(instruction, isEdit),
+            // A retried submit must not produce a second image, so the key travels
+            // with the request and the service reuses it on every attempt.
+            idempotencyKey = "glow-$seed-${System.currentTimeMillis()}",
         )
         submitting = true
         try {

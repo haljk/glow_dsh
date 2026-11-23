@@ -281,6 +281,8 @@ window.__ModuleLoader__.load({
   padding: 3px 9px; border: 1px solid var(--dsw-alias-border-l1);
   background: transparent; color: var(--dsw-alias-label-secondary); }
 .mw-chip:hover:not(:disabled) { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l2); }
+.mw-chip.on { color: var(--dsw-alias-brand-primary); border-color: var(--dsw-alias-brand-primary);
+  font-weight: 600; background: var(--dsw-alias-bg-layer-2); }
 .mw-presets { display: flex; flex-wrap: wrap; gap: 6px; }
 .mw-preset { font: inherit; font-size: 12px; cursor: pointer; border-radius: 8px;
   padding: 6px 11px; border: 1px solid var(--dsw-alias-border-l1);
@@ -338,18 +340,22 @@ window.__ModuleLoader__.load({
   margin-top: 6px; color: var(--dsw-alias-label-secondary); }
 .mw-thumbbtn { display: block; width: 100%; padding: 0; margin: 0; border: none;
   background: none; cursor: zoom-in; }
-.mw-viewer { position: fixed; inset: 0; z-index: 90; display: flex; flex-direction: column;
+.mw-viewer { position: fixed; inset: 0; z-index: 2147483000; display: flex; flex-direction: column;
   background: var(--dsw-alias-bg-base); }
-.mw-viewerhead { display: flex; align-items: center; gap: 8px; padding: 10px 16px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1); flex: none; flex-wrap: wrap; }
+/* Controls live at the bottom on purpose: the top strip of the window belongs to
+ * the app shell (its title bar swallows clicks), so anything placed there looks
+ * fine and does nothing. */
+.mw-viewerbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 16px 12px; border-top: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-base); flex: none;
+  -webkit-app-region: no-drag; }
+.mw-viewerbar .mw-hint { margin: 0; }
 .mw-viewerbody { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex;
   align-items: center; justify-content: center; padding: 16px;
   background: var(--dsw-alias-bg-layer-2); }
 .mw-viewerimg { max-width: 100%; max-height: 100%; object-fit: contain; display: block;
   border-radius: 6px; }
 .mw-viewerimg.actual { max-width: none; max-height: none; border-radius: 0; }
-.mw-viewerfoot { flex: none; padding: 8px 16px 12px; border-top: 1px solid var(--dsw-alias-border-l1);
-  font-size: 11px; color: var(--dsw-alias-label-secondary); display: flex; gap: 10px; flex-wrap: wrap; }
 .mw-cmp { flex: 1 1 auto; min-height: 0; display: flex; gap: 12px; padding: 12px 16px;
   background: var(--dsw-alias-bg-layer-2); overflow: hidden; }
 .mw-cmpPane { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
@@ -476,6 +482,7 @@ window.__ModuleLoader__.load({
         const [previewText, setPreviewText] = React.useState('')
         const [previewBusy, setPreviewBusy] = React.useState(false)
         const [submitting, setSubmitting] = React.useState(false)
+        const [cancelBusy, setCancelBusy] = React.useState('')
 
         const [assistBusy, setAssistBusy] = React.useState(false)
         const [assistOut, setAssistOut] = React.useState(null)
@@ -631,7 +638,9 @@ window.__ModuleLoader__.load({
         function applySettingsDraft(data) {
           setSettingsData(data)
           setSettingsDraft({
+            imageApiMode: data.settings.imageApiMode,
             imageBaseUrl: data.settings.imageBaseUrl,
+            imageSyncBaseUrl: data.settings.imageSyncBaseUrl,
             llmBaseUrl: data.settings.llmBaseUrl,
             llmModel: data.settings.llmModel,
             outputDir: data.settings.outputDir || '',
@@ -669,7 +678,12 @@ window.__ModuleLoader__.load({
             setSettingsTest(
               await call('/settings/test', {
                 method: 'POST',
-                body: { imageBaseUrl: settingsDraft.imageBaseUrl, llmBaseUrl: settingsDraft.llmBaseUrl },
+                body: {
+                  imageApiMode: settingsDraft.imageApiMode,
+                  imageBaseUrl: settingsDraft.imageBaseUrl,
+                  imageSyncBaseUrl: settingsDraft.imageSyncBaseUrl,
+                  llmBaseUrl: settingsDraft.llmBaseUrl,
+                },
               }),
             )
           } catch (err) {
@@ -736,7 +750,7 @@ window.__ModuleLoader__.load({
                 consumed.current.add(job.id)
                 if (job.status === 'done' && Array.isArray(job.items) && job.items.length > 0) {
                   newlyDone.push(job)
-                } else if (job.status === 'failed') {
+                } else if (job.status === 'failed' && !job.canceled) {
                   failure = job.error || '这次没成功，换个描述再试一次'
                 }
               }
@@ -786,7 +800,10 @@ window.__ModuleLoader__.load({
         const llmOk = caps && caps.llm ? Boolean(caps.llm.ok) : caps ? false : undefined
         const maxEdge = (imageCaps && imageCaps.maxEdge) || 2048
         const multiple = (imageCaps && imageCaps.multipleOf) || 32
-        const timeoutMs = (caps && caps.imageTimeoutMs) || 900000
+        const timeoutMs = (caps && caps.imageTimeoutMs) || 1800000
+        // With the queue, the wait is a server-side task, so a long estimate is
+        // no reason to refuse; only the old direct call has a per-request limit.
+        const queueMode = Boolean(imageCaps && imageCaps.mode === 'queue')
 
         const firstRef = refs.length > 0 ? refs[0] : null
         const autoSize = React.useMemo(() => {
@@ -823,7 +840,7 @@ window.__ModuleLoader__.load({
         const refLimit = scenario === 'retouch' ? 2 : MAX_COMBINE_REFS
         const refCount = scenario === 'text' ? 0 : refs.length
         const expected = estimateSeconds(effectiveSize, refCount, scenario === 'text' ? batch : 1)
-        const tooSlow = expected * 1000 > timeoutMs * 0.95
+        const tooSlow = !queueMode && expected * 1000 > timeoutMs * 0.95
 
         function appendToText(text) {
           setTextPrompt((current) => {
@@ -945,6 +962,21 @@ window.__ModuleLoader__.load({
           const value = Number(seedValue)
           if (!Number.isFinite(value) || value < 0) return undefined
           return Math.trunc(value)
+        }
+
+        async function cancelJob(id) {
+          if (cancelBusy) return
+          setCancelBusy(id)
+          setError('')
+          try {
+            const res = await call('/jobs/cancel', { method: 'POST', body: { id } })
+            setNotice(res && res.canceled === false ? res.reason || '这个任务已经结束了' : '已取消这个任务')
+            syncJobs()
+          } catch (err) {
+            setError(err.message)
+          } finally {
+            setCancelBusy('')
+          }
         }
 
         async function submit() {
@@ -1163,10 +1195,30 @@ window.__ModuleLoader__.load({
               label: capsLoading
                 ? '出图服务检查中…'
                 : imageOk
-                  ? '出图服务就绪' + (imageCaps.busy ? '（忙）' : '')
-                  : '出图服务没连上',
+                  ? queueMode
+                    ? '出图服务就绪' +
+                      (Number(imageCaps.queueQueued || 0) > 0
+                        ? '（排队 ' + imageCaps.queueQueued + '）'
+                        : Number(imageCaps.queueRunning || 0) > 0
+                          ? '（正在出图）'
+                          : '')
+                    : '出图服务就绪' + (imageCaps.busy ? '（忙）' : '')
+                  : imageCaps && imageCaps.degraded
+                    ? '出图服务在等模型恢复'
+                    : '出图服务没连上',
               tone: imageCaps && imageCaps.busy ? 'busy' : undefined,
-              title: imageCaps ? imageCaps.error || imageCaps.model || '' : '',
+              title: imageCaps
+                ? imageCaps.error ||
+                  (queueMode
+                    ? '队列服务 · 排队 ' +
+                      Number(imageCaps.queueQueued || 0) +
+                      ' / 生成中 ' +
+                      Number(imageCaps.queueRunning || 0) +
+                      '，结果保留 ' +
+                      (imageCaps.retentionDays || 7) +
+                      ' 天'
+                    : imageCaps.model || '')
+                : '',
             }),
             h(ServiceBadge, {
               ok: llmOk,
@@ -1713,14 +1765,83 @@ window.__ModuleLoader__.load({
                   h(
                     'div',
                     { className: 'mw-field' },
-                    h('div', { className: 'mw-label' }, '出图服务地址'),
+                    h('div', { className: 'mw-label' }, '出图方式'),
+                    h(
+                      'div',
+                      { className: 'mw-chips' },
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'mw-chip' + (draft.imageApiMode !== 'sync' ? ' on' : ''),
+                          disabled: settingsBusy,
+                          onClick: () => setField({ imageApiMode: 'queue' }),
+                        },
+                        '后台排队（推荐）',
+                      ),
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'mw-chip' + (draft.imageApiMode === 'sync' ? ' on' : ''),
+                          disabled: settingsBusy,
+                          onClick: () => setField({ imageApiMode: 'sync' }),
+                        },
+                        '直连出图（旧方式）',
+                      ),
+                    ),
+                    h(
+                      'div',
+                      { className: 'mw-hint' },
+                      draft.imageApiMode === 'sync'
+                        ? '旧方式：一次请求一直等到出图，编辑大图容易被超时掐断。只在对新方式有疑问时临时切回来。'
+                        : '提交后立刻返回，服务端排队慢慢做；页面关掉、DSH 重启都不会丢，回来还能拿到结果。',
+                    ),
+                  ),
+                  h(
+                    'div',
+                    { className: 'mw-field' },
+                    h('div', { className: 'mw-label' }, draft.imageApiMode === 'sync' ? '出图服务地址（直连）' : '队列服务地址'),
                     h('input', {
                       className: 'mw-in', disabled: settingsBusy,
-                      value: draft.imageBaseUrl || '',
-                      placeholder: settingsData ? settingsData.defaults.imageBaseUrl : 'http://127.0.0.1:9741',
-                      onChange: (e) => setField({ imageBaseUrl: e.target.value }),
+                      // Each mode has its own address; the field edits the one in use.
+                      value: draft.imageApiMode === 'sync' ? draft.imageSyncBaseUrl || '' : draft.imageBaseUrl || '',
+                      placeholder: settingsData
+                        ? draft.imageApiMode === 'sync'
+                          ? settingsData.defaults.imageSyncBaseUrl
+                          : settingsData.defaults.imageBaseUrl
+                        : draft.imageApiMode === 'sync'
+                          ? 'http://127.0.0.1:9741'
+                          : 'http://127.0.0.1:9742',
+                      onChange: (e) =>
+                        setField(
+                          draft.imageApiMode === 'sync'
+                            ? { imageSyncBaseUrl: e.target.value }
+                            : { imageBaseUrl: e.target.value },
+                        ),
                     }),
+                    h(
+                      'div',
+                      { className: 'mw-hint' },
+                      draft.imageApiMode === 'sync'
+                        ? '直连方式下填 9741（模型服务本身）。'
+                        : '队列服务地址，通常和模型服务同一台机器、端口 9742。',
+                    ),
                   ),
+                  draft.imageApiMode === 'sync'
+                    ? null
+                    : h(
+                        'div',
+                        { className: 'mw-field' },
+                        h('div', { className: 'mw-label' }, '模型服务地址（回滚用）'),
+                        h('input', {
+                          className: 'mw-in', disabled: settingsBusy,
+                          value: draft.imageSyncBaseUrl || '',
+                          placeholder: settingsData ? settingsData.defaults.imageSyncBaseUrl : 'http://127.0.0.1:9741',
+                          onChange: (e) => setField({ imageSyncBaseUrl: e.target.value }),
+                        }),
+                        h('div', { className: 'mw-hint' }, '原来的模型服务，切回直连时用这个地址，也用来读取它支持的尺寸上限。'),
+                      ),
                   h(
                     'div',
                     { className: 'mw-field' },
@@ -1746,12 +1867,19 @@ window.__ModuleLoader__.load({
                   h(
                     'div',
                     { className: 'mw-field' },
-                    h('div', { className: 'mw-label' }, '单次出图最长等待（秒）'),
+                    h('div', { className: 'mw-label' }, '一张图最多等多久（秒）'),
                     h('input', {
-                      className: 'mw-in', type: 'number', min: 30, step: 30, disabled: settingsBusy,
-                      value: Math.round((Number(draft.imageTimeoutMs) || 900000) / 1000),
+                      className: 'mw-in', type: 'number', min: 60, step: 60, disabled: settingsBusy,
+                      value: Math.round((Number(draft.imageTimeoutMs) || 1800000) / 1000),
                       onChange: (e) => setField({ imageTimeoutMs: Number(e.target.value) * 1000 }),
                     }),
+                    h(
+                      'div',
+                      { className: 'mw-hint' },
+                      draft.imageApiMode === 'sync'
+                        ? '直连方式下这是一次请求的最长等待，出图时间超过它就会被切断。'
+                        : '排队方式下这是总共愿意等的时长，排队时间也算在内；编辑大图建议不少于 900 秒。',
+                    ),
                   ),
                   h(
                     'div',
@@ -1839,31 +1967,48 @@ window.__ModuleLoader__.load({
           ? h(
               'div',
               { key: 'jobs' },
-              activeJobs.map((job) =>
-                h(
+              activeJobs.map((job) => {
+                const queued = job.status === 'queued'
+                const percent = Math.max(0, Math.min(100, Number(job.percent) || 0))
+                const eta = Number(job.etaSeconds) || 0
+                return h(
                   'div',
                   { key: job.id, className: 'mw-job' },
                   h('span', { className: 'mw-spin' }),
                   h(
                     'span',
                     { className: 'grow' },
-                    job.status === 'queued' ? '排队中' : '正在做',
+                    queued ? '排队中' : '正在做',
                     '　',
-                    job.status === 'queued'
-                      ? '前面还有 ' + Math.max(0, job.queuePosition - 1) + ' 个'
-                      : '已等 ' + formatDuration(job.elapsedSeconds),
+                    queued
+                      ? job.queuePosition > 1
+                        ? '前面还有 ' + (job.queuePosition - 1) + ' 个'
+                        : '下一个就轮到'
+                      : '已用 ' + formatDuration(job.elapsedSeconds) + (eta > 0 ? '，大约还要 ' + formatDuration(eta) : ''),
+                    job.status === 'running' && percent > 0 ? '　' + percent + '%' : '',
                     h(
                       'div',
                       { className: 'mw-hint', style: { marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
-                      humanisePrompt(job.request.prompt).slice(0, 60),
+                      job.note || humanisePrompt(job.request.prompt).slice(0, 60),
                     ),
                   ),
-                ),
-              ),
+                  queued
+                    ? h(
+                        'button',
+                        {
+                          type: 'button', className: 'mw-btn tiny', disabled: cancelBusy === job.id,
+                          title: '只在还没开始生成时可以取消；已经开始就只能等它做完',
+                          onClick: () => cancelJob(job.id),
+                        },
+                        cancelBusy === job.id ? '取消中…' : '取消',
+                      )
+                    : null,
+                )
+              }),
               h(
                 'div',
                 { className: 'mw-hint', style: { marginBottom: 4 } },
-                '任务在后台跑，切到别的页面、刷新、最小化都不会中断；回来还能看到结果。',
+                '任务在后台跑，切到别的页面、刷新、最小化都不会中断；DSH 重启后也会接着等。',
               ),
             )
           : null
@@ -2030,71 +2175,6 @@ window.__ModuleLoader__.load({
             ? h(
                 'div',
                 { className: 'mw-viewer', role: 'dialog', 'aria-modal': 'true', 'aria-label': '查看图片' },
-                h(
-                  'div',
-                  { className: 'mw-viewerhead' },
-                  h(
-                    'button',
-                    {
-                      type: 'button', className: 'mw-btn tiny', autoFocus: true,
-                      onClick: () => setViewer(null),
-                    },
-                    '关闭（Esc）',
-                  ),
-                  viewer.list.length > 1
-                    ? h('button', { type: 'button', className: 'mw-btn tiny', onClick: () => stepViewer(-1) }, '← 上一张')
-                    : null,
-                  viewer.list.length > 1
-                    ? h('button', { type: 'button', className: 'mw-btn tiny', onClick: () => stepViewer(1) }, '下一张 →')
-                    : null,
-                  h('span', { className: 'mw-hint', style: { margin: 0 } }, viewer.index + 1 + ' / ' + viewer.list.length),
-                  canCompare
-                    ? h(
-                        'button',
-                        {
-                          type: 'button', className: 'mw-btn tiny',
-                          onClick: () => setViewerMode(viewerMode === 'compare' ? 'single' : 'compare'),
-                        },
-                        viewerMode === 'compare' ? '只看结果' : '对比参考图',
-                      )
-                    : null,
-                  canCompare && viewerMode === 'compare'
-                    ? h(
-                        'button',
-                        {
-                          type: 'button', className: 'mw-btn tiny',
-                          onClick: () => setCompareLayout(compareLayout === 'side' ? 'wipe' : 'side'),
-                        },
-                        compareLayout === 'side' ? '换成滑动对比' : '换成并排对比',
-                      )
-                    : null,
-                  !canCompare || viewerMode === 'single'
-                    ? h(
-                        'button',
-                        {
-                          type: 'button', className: 'mw-btn tiny',
-                          onClick: () => setViewerActual(!viewerActual),
-                        },
-                        viewerActual ? '适应屏幕' : '看实际像素',
-                      )
-                    : null,
-                  h(
-                    'a',
-                    {
-                      className: 'mw-btn tiny', href: viewed.fileUrl, download: viewed.name,
-                      style: { textDecoration: 'none', display: 'inline-block' },
-                    },
-                    '下载',
-                  ),
-                  h(
-                    'a',
-                    {
-                      className: 'mw-btn tiny', href: viewed.fileUrl, target: '_blank', rel: 'noreferrer',
-                      style: { textDecoration: 'none', display: 'inline-block' },
-                    },
-                    '在新窗口打开',
-                  ),
-                ),
                 viewerMode === 'compare' && canCompare
                   ? compareLayout === 'side'
                     ? h(
@@ -2165,11 +2245,76 @@ window.__ModuleLoader__.load({
                     ),
                 h(
                   'div',
-                  { className: 'mw-viewerfoot' },
-                  h('span', null, viewed.size || ''),
-                  viewed.seconds ? h('span', null, formatDuration(viewed.seconds)) : null,
-                  viewed.note ? h('span', null, '你的要求：' + viewed.note) : null,
-                  h('span', { style: { marginLeft: 'auto' } }, 'Esc 关闭 · 左右方向键翻页 · 点空白处关闭'),
+                  { className: 'mw-viewerbar' },
+                  h(
+                    'button',
+                    {
+                      type: 'button', className: 'mw-btn tiny', autoFocus: true,
+                      onClick: () => setViewer(null),
+                    },
+                    '关闭（Esc）',
+                  ),
+                  viewer.list.length > 1
+                    ? h('button', { type: 'button', className: 'mw-btn tiny', onClick: () => stepViewer(-1) }, '← 上一张')
+                    : null,
+                  viewer.list.length > 1
+                    ? h('button', { type: 'button', className: 'mw-btn tiny', onClick: () => stepViewer(1) }, '下一张 →')
+                    : null,
+                  h('span', { className: 'mw-hint' }, viewer.index + 1 + ' / ' + viewer.list.length),
+                  canCompare
+                    ? h(
+                        'button',
+                        {
+                          type: 'button', className: 'mw-btn tiny',
+                          onClick: () => setViewerMode(viewerMode === 'compare' ? 'single' : 'compare'),
+                        },
+                        viewerMode === 'compare' ? '只看结果' : '对比参考图',
+                      )
+                    : null,
+                  canCompare && viewerMode === 'compare'
+                    ? h(
+                        'button',
+                        {
+                          type: 'button', className: 'mw-btn tiny',
+                          onClick: () => setCompareLayout(compareLayout === 'side' ? 'wipe' : 'side'),
+                        },
+                        compareLayout === 'side' ? '换成滑动对比' : '换成并排对比',
+                      )
+                    : null,
+                  !canCompare || viewerMode === 'single'
+                    ? h(
+                        'button',
+                        {
+                          type: 'button', className: 'mw-btn tiny',
+                          onClick: () => setViewerActual(!viewerActual),
+                        },
+                        viewerActual ? '适应屏幕' : '看实际像素',
+                      )
+                    : null,
+                  h(
+                    'a',
+                    {
+                      className: 'mw-btn tiny', href: viewed.fileUrl, download: viewed.name,
+                      style: { textDecoration: 'none', display: 'inline-block' },
+                    },
+                    '下载',
+                  ),
+                  h(
+                    'a',
+                    {
+                      className: 'mw-btn tiny', href: viewed.fileUrl, target: '_blank', rel: 'noreferrer',
+                      style: { textDecoration: 'none', display: 'inline-block' },
+                    },
+                    '在新窗口打开',
+                  ),
+                  h(
+                    'span',
+                    { className: 'mw-hint', style: { marginLeft: 'auto' } },
+                    [viewed.size, viewed.seconds ? formatDuration(viewed.seconds) : '', viewed.note ? '你的要求：' + viewed.note : '']
+                      .filter(Boolean)
+                      .concat('Esc 关闭 · 左右方向键翻页 · 点空白处关闭')
+                      .join(' · '),
+                  ),
                 ),
               )
             : null

@@ -62,7 +62,9 @@ import dev.haljk.glow.ui.theme.glow
 @Composable
 fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
     val current = vm.settings
+    var mode by remember(current) { mutableStateOf(current.imageApiMode) }
     var imageUrl by remember(current) { mutableStateOf(current.imageBaseUrl) }
+    var syncUrl by remember(current) { mutableStateOf(current.imageSyncBaseUrl) }
     var llmUrl by remember(current) { mutableStateOf(current.llmBaseUrl) }
     var model by remember(current) { mutableStateOf(current.llmModel) }
     var imageTimeout by remember(current) { mutableStateOf(current.imageTimeoutSeconds.toString()) }
@@ -72,7 +74,9 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
     var confirmReset by remember { mutableStateOf(false) }
 
     fun draft() = Settings(
+        imageApiMode = mode,
         imageBaseUrl = imageUrl,
+        imageSyncBaseUrl = syncUrl,
         llmBaseUrl = llmUrl,
         llmModel = model,
         imageTimeoutSeconds = imageTimeout.toIntOrNull() ?: current.imageTimeoutSeconds,
@@ -116,7 +120,35 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
 
                 GroupTitle("连接")
                 GlowCard {
-                    Field("出图服务地址", imageUrl, { imageUrl = it }, Settings.DEFAULT_IMAGE_URL)
+                    Text(
+                        "队列模式：提交任务后由服务排队，手机只负责轮询取图。同步模式退回旧接口，一次请求要等到出图。",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ChoiceChip(
+                            label = "队列",
+                            secondLine = "推荐",
+                            selected = mode == Settings.MODE_QUEUE,
+                            modifier = Modifier.weight(1f),
+                            onClick = { mode = Settings.MODE_QUEUE },
+                        )
+                        ChoiceChip(
+                            label = "同步",
+                            secondLine = "旧接口",
+                            selected = mode == Settings.MODE_SYNC,
+                            modifier = Modifier.weight(1f),
+                            onClick = { mode = Settings.MODE_SYNC },
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Field(
+                        if (mode == Settings.MODE_QUEUE) "队列地址" else "同步服务地址",
+                        if (mode == Settings.MODE_QUEUE) imageUrl else syncUrl,
+                        { if (mode == Settings.MODE_QUEUE) imageUrl = it else syncUrl = it },
+                        if (mode == Settings.MODE_QUEUE) Settings.DEFAULT_IMAGE_URL else Settings.DEFAULT_SYNC_URL,
+                    )
                     Spacer(Modifier.height(10.dp))
                     Field("提示词服务地址", llmUrl, { llmUrl = it }, Settings.DEFAULT_LLM_URL)
                     Row(
@@ -134,12 +166,21 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
                             modifier = Modifier.weight(1f),
                         )
                         Text(
-                            if (advancedOpen) "" else "模型名等",
+                            if (advancedOpen) "" else "另一个地址、模型名",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     if (advancedOpen) {
+                        // Both addresses are kept so switching modes never loses the
+                        // other one; the rollback target is one field, not a retype.
+                        Field(
+                            if (mode == Settings.MODE_QUEUE) "同步服务地址（回退用）" else "队列地址（备用）",
+                            if (mode == Settings.MODE_QUEUE) syncUrl else imageUrl,
+                            { if (mode == Settings.MODE_QUEUE) syncUrl = it else imageUrl = it },
+                            if (mode == Settings.MODE_QUEUE) Settings.DEFAULT_SYNC_URL else Settings.DEFAULT_IMAGE_URL,
+                        )
+                        Spacer(Modifier.height(10.dp))
                         Field("模型名（一般不用改）", model, { model = it }, Settings.DEFAULT_LLM_MODEL)
                         Text(
                             "写作助手只接受这一个模型名，写别的会被当成仓库名而报错。",
@@ -240,7 +281,9 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
                 TextButton(onClick = {
                     confirmReset = false
                     val defaults = Settings()
+                    mode = defaults.imageApiMode
                     imageUrl = defaults.imageBaseUrl
+                    syncUrl = defaults.imageSyncBaseUrl
                     llmUrl = defaults.llmBaseUrl
                     model = defaults.llmModel
                     imageTimeout = defaults.imageTimeoutSeconds.toString()

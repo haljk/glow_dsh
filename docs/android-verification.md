@@ -55,6 +55,37 @@
 - **交付包全新安装冒烟**：卸载后用 `dist/glow-debug.apk` 重装，`pm path` 取出 `base.apk` 与交付包 SHA256 **字节一致**；
   重新填地址后跑通一次完整生成（"final smoke test"），产物落盘，状态栏图标正常。
 
+## 队列改造（2026-11-23）
+
+服务端把 `:9741` 同步接口包了一层队列 `:9742`，Android 默认改走队列，同步保留可回退。
+
+| 切换指南要求 | 实现 | 证据 |
+| --- | --- | --- |
+| 提交返回 202 并拿到 id | `ModelClient.submitTextToImage/submitEdit`，解析 `id` | `QueueClientTest`（15 例） |
+| 轮询能拿到 queued/running/succeeded | `GenerationService` 每 4 秒查一次 | 日志采样：`排队中` → `正在生成 约 13%` → `完成` |
+| 成功后下载并转存 | `fetchResult` 后立刻 `GalleryStore.save` | 产物 `20261123-133309-1411923315.json` |
+| `n=2` 分别取 `result.png` / `result-1.png` | `fallbackItems` 按索引拼 URL | `QueueClientTest`「a finished task lists its images」 |
+| 相同 `Idempotency-Key` 不产生第二张 | 提交带键，重试复用 | `QueueClientTest`「submit sends the documented body」 |
+| 429 有延迟重提；4xx 不重试 | `QueueBusy.retryAfterMs` 退避；`QueueRejected` 直接报错 | 契约测试各一例 |
+| `failed` 能展示上游错误 | `state.error` 直接进横幅 | `QueueClientTest`「a failed task keeps the model's own words」 |
+| 客户端重启能用已有 `job_id` 续查 | `pending-job.json` + `resumePendingJob()` | 见下 |
+| 回滚开关 | 设置页「队列 / 同步」切换，两个地址都保存 | 设置页截图 |
+
+**真机验证记录**
+
+- 队列模式一次 1024² 真实生成：`job_20261123-133205_ecb0f2c1`，61.65 秒，产物元数据里带 `queueJobId`。
+- 计数器：`succeeded` 36 → 37，只增一次。
+- **重启续查**：提交 `job_20261123-133354_3ed5bb93` 后 6 秒 `force-stop` 杀进程；
+  重开 App 横幅直接显示 `正在生成 · 已等 8 秒`，队列侧仍 `running=1`、任务号不变，
+  说明没有重新提交；完成后队列 `succeeded` 只 +1，产物带同一个 `queueJobId`。
+- 进度真实跳动：每 3 秒采样得到 `约 6% → 13% → 19% → 32% → 39% → 52% → 58% → 71%`。
+
+**已知取舍**
+
+- 续查时 App 已经拿不到相册授权（photo picker 的读取权限不跨进程），所以恢复的精修任务
+  只保留结果、不再补参考图副本；对比视图此时只显示结果。
+- 进度是服务端按历史耗时估的，界面写「约 X%」，不承诺精确。
+- 结果只保留 7 天，App 在 `succeeded` 后立刻下载，不留「只存 URL」的路径。
 ## 已知限制
 
 1. **滑动对比的拖动**与**点击定位**共用同一个指针处理。点击定位已在真机取证

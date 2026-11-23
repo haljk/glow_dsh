@@ -25,6 +25,8 @@ data class GalleryItem(
     val archived: Boolean,
     val refFiles: List<String>,
     val revisedPrompt: String,
+    /** The queue task this came from, so a result can be traced back upstream. */
+    val queueJobId: String = "",
 ) {
     val file: File? = null
 
@@ -63,6 +65,7 @@ class GalleryStore(private val directory: File) {
         revisedPrompt: String,
         referenceBytes: List<ByteArray>,
         keepReferenceCopies: Boolean,
+        queueJobId: String = "",
     ): GalleryItem {
         directory.mkdirs()
         val imageName = "$baseName.png"
@@ -90,6 +93,7 @@ class GalleryStore(private val directory: File) {
             archived = false,
             refFiles = refNames,
             revisedPrompt = revisedPrompt,
+            queueJobId = queueJobId,
         )
         writeSidecar(item)
         return item
@@ -108,6 +112,7 @@ class GalleryStore(private val directory: File) {
             put("archived", item.archived)
             put("revisedPrompt", item.revisedPrompt)
             put("refFiles", JSONArray(item.refFiles))
+            put("queueJobId", item.queueJobId)
         }
         File(directory, sidecarName(item.name)).writeText(json.toString(2))
     }
@@ -174,6 +179,7 @@ class GalleryStore(private val directory: File) {
             archived = json?.optBoolean("archived", false) ?: false,
             refFiles = refs,
             revisedPrompt = json?.optString("revisedPrompt", "") ?: "",
+            queueJobId = json?.optString("queueJobId", "") ?: "",
         )
     }
 
