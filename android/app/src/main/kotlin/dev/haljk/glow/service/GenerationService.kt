@@ -131,6 +131,7 @@ class GenerationService : Service() {
             startedAt = startedAt,
             items = images.map { QueueResultItem("", it.seed, request.size, it.seconds, it.revisedPrompt) },
             load = { images[it].bytes },
+            referenceBytes = references.map { it.bytes },
         )
         finishWith(request, produced)
     }
@@ -254,6 +255,7 @@ class GenerationService : Service() {
                         items = items,
                         load = { client.fetchResult(items[it].url) },
                         queueJobId = remoteId,
+                        referenceBytes = references.map { it.bytes },
                     )
                     store.clear()
                     finishWith(request, produced)
@@ -340,15 +342,14 @@ class GenerationService : Service() {
         items: List<QueueResultItem>,
         load: (Int) -> ByteArray,
         queueJobId: String = "",
+        // Passed in rather than re-read: the photo-picker grant is minute-scoped on
+        // some ROMs, and a queue job can run for six of them. Re-reading after the
+        // wait could come back empty, which silently dropped the reference copy —
+        // and with it the whole comparison view.
+        referenceBytes: List<ByteArray> = emptyList(),
     ): Int {
         val gallery = GalleryStore(File(filesDir, "gallery")).also { it.ensureDir() }
-        val references = if (request.isEdit) {
-            request.referenceUris.mapNotNull { raw ->
-                runCatching { ImageIntake.read(applicationContext, Uri.parse(raw)) }.getOrNull()
-            }.map { it.bytes }
-        } else {
-            emptyList()
-        }
+        val references = if (request.isEdit) referenceBytes else emptyList()
         var produced = 0
         items.forEachIndexed { index, item ->
             val bytes = try {
