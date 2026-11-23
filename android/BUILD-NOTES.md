@@ -151,6 +151,30 @@ can beat the notification and read empty with a working icon.
    five density PNGs generated from the same geometry. The symptom looks exactly
    like "the icon change did not take, reboot the phone" — it is a packaging bug,
    not a cache.
+## Interface changes go through an aesthetic review
+
+Every change that touches a screen is reviewed by an independent aesthetic pass before
+it counts as done. The review reads the actual screenshots with `read_image` and
+measures them — ink extents, control bounds, padding, contrast ratios — instead of
+admiring a description. An opinion without a number is not reviewable, and a round
+that only says "looks better" is not a pass.
+
+Two consecutive rounds are the normal case, not a failure. In the round that produced
+this note, six of eight findings were fixed the first time and two were only partly
+fixed; the second pass then caught a regression the first pass had introduced (the
+comparison labels ended up drawn on top of the photo, where a grey pill on a white
+frame measures 3.8:1 and reads as a smudge). Fixing one alignment problem kept
+uncovering the next one beneath it, which is exactly why the measurement has to
+happen against the built APK and not against the diff.
+
+Practical rules that came out of it:
+
+- Measure in pixels on the screenshot, convert to dp with the density, and state both.
+- One rail per app (16dp here). Every deviation is either a bug or needs a reason.
+- Prefer a fixed anchor over a content-dependent one: two modes that place the same
+  words differently read as two different bugs.
+- A control's own minimum width (TextButton's 58dp) will fight an edge you aligned:
+  use plain clickable text when the label must reach the margin.
 ## One tooling trap, same shape
 
 **Gallery tiles cannot be found by a pixel offset.** The audit script used to tap

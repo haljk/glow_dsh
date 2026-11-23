@@ -56,6 +56,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import kotlin.math.min
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
@@ -69,6 +73,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -142,7 +147,9 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
             Modifier
                 .fillMaxWidth()
                 .height(48.dp)
-                .padding(start = 4.dp, end = 8.dp),
+                // Both ends on the 16dp rail: the arrow sat at 16dp while the
+                // 原图/结果 pill ended at 8.4dp, which read as a lopsided bar.
+                .padding(start = 4.dp, end = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onClose, modifier = Modifier.size(48.dp)) {
@@ -152,7 +159,7 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
                     tint = onChrome,
                 )
             }
-            Column(Modifier.weight(1f).padding(start = 4.dp)) {
+            Column(Modifier.weight(1f).padding(start = 4.dp, end = 12.dp)) {
                 Text(
                     // Falling back to the pixel size put the same string on both
                     // lines; when the user typed nothing, the date is more useful.
@@ -186,7 +193,13 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
         }
 
         // ------------------------------------------------------------------ image
-        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+        val resultBitmap = rememberFileBitmap(resultFile, targetPx = 2048)
+        var imageBox by remember { mutableStateOf(IntSize.Zero) }
+        val boxDensity = LocalDensity.current
+        Box(
+            Modifier.weight(1f).fillMaxWidth().onSizeChanged { imageBox = it },
+            contentAlignment = Alignment.Center,
+        ) {
             when (mode) {
                 CompareMode.SWITCH -> SwitchCompare(
                     referenceFile = refFile,
@@ -217,6 +230,42 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
                     fraction = fraction,
                     onFractionChange = { fraction = it },
                 )
+            }
+
+            // One label row for both split modes, anchored to the photo rather than
+            // to the pane: side-by-side used to label at the top of the picture and
+            // wipe at the bottom of the screen, so switching moved the same words.
+            if (refFile != null && mode != CompareMode.SWITCH &&
+                resultBitmap != null && imageBox.height > 0
+            ) {
+                // Full-width photo height, i.e. the size the wipe view draws at, so the
+                // label row lands on the same line in both split modes instead of
+                // following each pane's own size.
+                val photoHeight = min(
+                    imageBox.height.toFloat(),
+                    imageBox.width * resultBitmap.height.toFloat() / resultBitmap.width,
+                )
+                val photoBottom = (imageBox.height - photoHeight) / 2f + photoHeight
+                Box(
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .offset {
+                            // 24dp below the picture: on the photo the tag fought the
+                            // image for contrast (a grey pill on a white frame), and the
+                            // other mode drew the same tag on plain black.
+                            IntOffset(0, (photoBottom + with(boxDensity) { 24.dp.toPx() }).toInt())
+                        }
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp),
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        PaneTag("原图")
+                        PaneTag("结果")
+                    }
+                }
             }
 
             val hintText = when {
@@ -316,13 +365,27 @@ private fun SwitchPill(
         fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
         modifier = Modifier
             .clip(RoundedCornerShape(14.dp))
-            .background(if (selected) onChrome else Color.Transparent)
+            .background(if (selected) onChrome.copy(alpha = 0.95f) else Color.Transparent)
             .clickable { onClick() }
             .padding(horizontal = 14.dp, vertical = 6.dp),
     )
 }
 
 /** Reading "how" is navigation, not a task: it is styled as a selector, not buttons. */
+/** "原图" / "结果" tag. One style, one place, so both split modes agree. */
+@Composable
+private fun PaneTag(label: String) {
+    Text(
+        label,
+        color = MaterialTheme.glow.onScrim.copy(alpha = 0.85f),
+        style = MaterialTheme.typography.labelMedium,
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.glow.scrim.copy(alpha = 0.5f))
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    )
+}
+
 @Composable
 private fun ModeSegments(
     current: CompareMode,
@@ -341,19 +404,27 @@ private fun ModeSegments(
     ) {
         COMPARE_MODES.forEach { entry ->
             val selected = entry == current
-            Text(
-                entry.label,
-                color = if (selected) chrome else onChrome.copy(alpha = 0.6f),
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                modifier = Modifier
+            // A Text given weight(1f) draws at the start of its slot, which left all
+            // three labels hugging the left edge of their segments and the selected
+            // one visibly off-centre against its pill. Centre both axes instead.
+            Box(
+                Modifier
                     .weight(1f)
-                    .heightIn(min = 36.dp)
+                    .heightIn(min = 38.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(if (selected) onChrome else Color.Transparent)
-                    .clickable { onPick(entry) }
-                    .padding(vertical = 9.dp),
-            )
+                    .background(if (selected) onChrome.copy(alpha = 0.95f) else Color.Transparent)
+                    .clickable { onPick(entry) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    entry.label,
+                    color = if (selected) chrome else onChrome.copy(alpha = 0.6f),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }
@@ -388,17 +459,7 @@ private fun LabeledPane(
                 contentScale = ContentScale.Fit,
             )
         }
-        Text(
-            label,
-            color = MaterialTheme.glow.onScrim.copy(alpha = 0.85f),
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 8.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.glow.scrim.copy(alpha = 0.5f))
-                .padding(horizontal = 8.dp, vertical = 3.dp),
-        )
+
     }
 }
 
@@ -488,7 +549,7 @@ private fun WipeCompare(
                 }
             },
     ) {
-        DrawPane(result, "结果", Modifier.fillMaxSize(), Alignment.BottomEnd)
+        DrawPane(result, "结果", Modifier.fillMaxSize())
         DrawPane(
             bitmap = reference,
             label = "原图",
@@ -499,16 +560,27 @@ private fun WipeCompare(
                         this@drawWithContent.drawContent()
                     }
                 },
-            labelSpot = Alignment.BottomStart,
         )
         if (widthPx > 0) {
-            Box(
-                Modifier
-                    .offset(x = with(density) { (widthPx * fraction).toDp() } - 1.dp)
-                    .width(2.dp)
-                    .fillMaxSize()
-                    .background(MaterialTheme.glow.onScrim.copy(alpha = 0.9f)),
-            )
+            // Drawn inside the photo, not across the whole pane: a full-height line
+            // ran from the subtitle down through the hint pill and stopped in mid-air
+            // below the picture.
+            val lineColor = MaterialTheme.glow.onScrim.copy(alpha = 0.9f)
+            Canvas(Modifier.fillMaxSize()) {
+                val photoHeight = if (result != null && result.width > 0) {
+                    min(size.height, size.width * result.height / result.width)
+                } else {
+                    size.height
+                }
+                val top = (size.height - photoHeight) / 2f
+                val x = size.width * fraction
+                drawLine(
+                    color = lineColor,
+                    start = Offset(x, top),
+                    end = Offset(x, top + photoHeight),
+                    strokeWidth = 2.dp.toPx(),
+                )
+            }
         }
     }
 }
@@ -518,7 +590,6 @@ private fun DrawPane(
     bitmap: ImageBitmap?,
     label: String?,
     modifier: Modifier,
-    labelSpot: Alignment = Alignment.TopEnd,
 ) {
     Box(modifier, contentAlignment = Alignment.Center) {
         if (bitmap != null) {
@@ -529,19 +600,7 @@ private fun DrawPane(
                 contentScale = ContentScale.Fit,
             )
         }
-        if (label != null) {
-            Text(
-                label,
-                color = MaterialTheme.glow.onScrim.copy(alpha = 0.85f),
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier
-                    .align(labelSpot)
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.glow.scrim.copy(alpha = 0.5f))
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-            )
-        }
+
     }
 }
 

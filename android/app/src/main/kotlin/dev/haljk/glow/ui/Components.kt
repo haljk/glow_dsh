@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -108,9 +109,18 @@ fun SectionHeader(
             }
         }
         if (action != null && onAction != null) {
-            TextButton(onClick = onAction, enabled = enabled, modifier = Modifier.heightIn(min = 44.dp)) {
-                Text(action, style = MaterialTheme.typography.labelLarge)
-            }
+            // Plain clickable text: even with zero content padding, TextButton keeps a
+            // 58dp minimum width and centres its label inside it, which pushed a
+            // three-character link 9dp inside the field's right edge.
+            Text(
+                action,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary.copy(alpha = if (enabled) 1f else 0.45f),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(enabled = enabled) { onAction() }
+                    .padding(horizontal = 4.dp, vertical = 10.dp),
+            )
         }
     }
 }
@@ -150,7 +160,7 @@ fun ScenarioRow(current: Scenario, compact: Boolean = false, onPick: (Scenario) 
                     )
                     .clickable { onPick(entry) }
                     .padding(horizontal = 10.dp, vertical = 11.dp),
-                verticalArrangement = Arrangement.spacedBy(3.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterVertically),
             ) {
                 Text(
                     entry.title,

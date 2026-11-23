@@ -183,7 +183,7 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
                         Spacer(Modifier.height(10.dp))
                         Field("模型名（一般不用改）", model, { model = it }, Settings.DEFAULT_LLM_MODEL)
                         Text(
-                            "写作助手只接受这一个模型名，写别的会被当成仓库名而报错。",
+                            "写作助手只认这一个模型名，写别的会被当成仓库名。",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 6.dp),

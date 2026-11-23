@@ -265,7 +265,7 @@ private fun WorkbenchScreen(
                     .widthIn(max = ContentMaxWidth)
                     .fillMaxHeight()
                     .testTag("workbench-list"),
-                contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 24.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 24.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
@@ -408,14 +408,28 @@ private fun WorkbenchScreen(
                             Modifier.fillMaxWidth().padding(top = 4.dp),
                             horizontalArrangement = Arrangement.End,
                         ) {
-                            TextButton(
-                                onClick = { vm.saveFavorite() },
-                                modifier = Modifier.heightIn(min = 44.dp),
-                            ) { Text("存为常用（${vm.favorites.size}/5）") }
-                            TextButton(
-                                onClick = { showInstructionSheet = true },
-                                modifier = Modifier.heightIn(min = 44.dp),
-                            ) { Text("看会发送什么") }
+                            // Plain clickable text, not TextButton: the button's own
+                            // horizontal padding pulled both links 13dp inside the
+                            // field above them, and the left one lost its alignment
+                            // with the field's left edge too.
+                            Text(
+                                "存为常用（${vm.favorites.size}/5）",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { vm.saveFavorite() }
+                                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                            )
+                            Text(
+                                "看会发送什么",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { showInstructionSheet = true }
+                                    .padding(start = 12.dp, top = 12.dp, bottom = 12.dp),
+                            )
                         }
                     }
                 }
@@ -797,7 +811,7 @@ private fun ArchiveScreen(vm: GlowViewModel, snackbar: SnackbarHostState, onBack
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
                     modifier = Modifier.widthIn(max = ContentMaxWidth).fillMaxHeight(),
-                    contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 24.dp),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
