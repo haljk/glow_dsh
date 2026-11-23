@@ -142,6 +142,15 @@ the glyph you want and frames the neighbour that just moved right, which produce
 convincing but meaningless "0 -> 36"; and a screenshot taken five seconds into a job
 can beat the notification and read empty with a working icon.
 
+5. **An adaptive icon alone is not enough on a vendor ROM.** The launcher icon was
+   correct on AOSP, but Xiaomi's package installer showed the system's fallback
+   robot: it resolves `@mipmap/ic_launcher` per density instead of taking the
+   `anydpi-v26` adaptive icon. Deleting the density PNGs (they had been the Android
+   Studio template) removed the only artwork that path could find, and the ROM
+   silently substituted the default icon. Ship both: the adaptive XML *and* the
+   five density PNGs generated from the same geometry. The symptom looks exactly
+   like "the icon change did not take, reboot the phone" — it is a packaging bug,
+   not a cache.
 ## One tooling trap, same shape
 
 **Gallery tiles cannot be found by a pixel offset.** The audit script used to tap
