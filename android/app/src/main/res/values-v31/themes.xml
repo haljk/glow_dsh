@@ -4,8 +4,8 @@
     <!-- Android 12+ splash screen: same purple, same mark, so the icon and the
          first frame read as one transition. -->
     <style name="Theme.Glow" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">@color/splash_background</item>
+        <item name="android:windowBackground">@drawable/splash_background</item>
         <item name="android:windowSplashScreenBackground">@color/splash_background</item>
-        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_splash_mark</item>
     </style>
 </resources>

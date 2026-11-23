@@ -1,22 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Themed-icon layer (Android 13+): same silhouette, single colour, no glow. -->
+<!-- Themed-icon layer (Android 13+). The system replaces every colour with its own
+     tint, so this layer can only be a silhouette: a gable with the lit window
+     punched out by evenOdd. Anything relying on the amber glow or the texture would
+     collapse to a dark blob here. Apex 54,20; eaves at y=54; wall down to y=90. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
-        android:pathData="M33,43 L54,26 L75,43"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="5"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
-    <path
-        android:pathData="M42,43 h24 a5,5 0 0 1 5,5 v24 a5,5 0 0 1 -5,5 h-24 a5,5 0 0 1 -5,-5 v-24 a5,5 0 0 1 5,-5 z"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="5"
-        android:strokeLineJoin="round" />
-    <path
-        android:pathData="M47.5,60a6.5,6.5 0 1,0 13,0a6.5,6.5 0 1,0 -13,0z"
-        android:fillColor="#FFFFFF" />
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M54,20 L98,54 L98,90 L10,90 L10,54 Z M54,44 L74,66 L34,66 Z" />
 </vector>

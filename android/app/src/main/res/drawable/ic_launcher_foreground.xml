@@ -1,58 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- A lit attic window: roof line, window frame, and the warm glow the product
-     actually produces. Ink box x 30.5–77.5, y 23.5–77.5, inside the 66dp safe
-     circle, so no launcher mask clips it. -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-
-    <!-- glow behind the frame -->
-    <path android:pathData="M39,60a15,15 0 1,0 30,0a15,15 0 1,0 -30,0z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:type="radial"
-                android:centerX="54"
-                android:centerY="60"
-                android:gradientRadius="15">
-                <item
-                    android:offset="0"
-                    android:color="#FFFFE3B0" />
-                <item
-                    android:offset="0.42"
-                    android:color="#FFFFE3B0" />
-                <item
-                    android:offset="0.5"
-                    android:color="#73FFE3B0" />
-                <item
-                    android:offset="0.74"
-                    android:color="#2EFFE3B0" />
-                <item
-                    android:offset="1"
-                    android:color="#00FFE3B0" />
-            </gradient>
-        </aapt:attr>
-    </path>
-
-    <!-- roof -->
-    <path
-        android:pathData="M33,43 L54,26 L75,43"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="5"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
-
-    <!-- window frame -->
-    <path
-        android:pathData="M42,43 h24 a5,5 0 0 1 5,5 v24 a5,5 0 0 1 -5,5 h-24 a5,5 0 0 1 -5,-5 v-24 a5,5 0 0 1 5,-5 z"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="5"
-        android:strokeLineJoin="round" />
-
-    <!-- lamp core -->
-    <path
-        android:pathData="M47.5,60a6.5,6.5 0 1,0 13,0a6.5,6.5 0 1,0 -13,0z"
-        android:fillColor="#FFFFF1D6" />
-</vector>
+<!-- Foreground layer: the designed artwork, full bleed on the 108dp canvas.
+     It is a bitmap because the design relies on texture and a soft light falloff
+     that no reasonable vector would reproduce; the launcher mask crops only the
+     navy corners. The same drawable doubles as the splash-screen icon, so a cold
+     start shows the mark that is about to appear on the home screen. -->
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+    android:src="@drawable/ic_launcher_art"
+    android:gravity="fill" />
