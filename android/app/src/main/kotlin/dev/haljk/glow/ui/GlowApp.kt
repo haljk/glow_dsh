@@ -43,8 +43,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -89,7 +91,7 @@ import dev.haljk.glow.data.JobRegistry
 import dev.haljk.glow.ui.theme.ContentMaxWidth
 import dev.haljk.glow.ui.theme.glow
 
-private enum class RootScreen { WORKBENCH, ARCHIVE, SETTINGS }
+private enum class RootScreen { WORKBENCH, LIBRARY, SETTINGS }
 
 @Composable
 fun GlowApp(vm: GlowViewModel) {
@@ -117,13 +119,13 @@ fun GlowApp(vm: GlowViewModel) {
             vm = vm,
             snackbar = snackbar,
             onOpenSettings = { screen = RootScreen.SETTINGS },
-            onOpenArchive = { screen = RootScreen.ARCHIVE },
+            onOpenArchive = { screen = RootScreen.LIBRARY },
             onOpenItem = { name -> vm.activeItems.firstOrNull { it.name == name }?.let { vm.viewing = it } },
         )
 
-        RootScreen.ARCHIVE -> {
+        RootScreen.LIBRARY -> {
             BackHandler { screen = RootScreen.WORKBENCH }
-            ArchiveScreen(
+            LibraryScreen(
                 vm = vm,
                 snackbar = snackbar,
                 onBack = { screen = RootScreen.WORKBENCH },
@@ -505,7 +507,7 @@ private fun WorkbenchScreen(
                     // Same trap as the 帮我写 link: TextButton centres its label inside a
                     // 58dp minimum, which pulled this one 12dp off the 16dp rail.
                     Text(
-                        "归档箱（${vm.archivedCount}）",
+                        "全部 ›",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier
@@ -532,7 +534,9 @@ private fun WorkbenchScreen(
                         }
                     }
                 } else {
-                    items(vm.activeItems, key = { it.name }) { item ->
+                    // The home grid is a shelf, not the archive: show the newest few and
+                    // send the rest to 全部作品, so the page does not grow with history.
+                    items(vm.activeItems.take(8), key = { it.name }) { item ->
                         GalleryTile(item = item, file = vm.fileOf(item), onOpen = { vm.viewing = item })
                     }
                 }
@@ -865,32 +869,120 @@ private fun RoleSheet(current: Role, onPick: (Role) -> Unit, onDismiss: () -> Un
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ArchiveScreen(vm: GlowViewModel, snackbar: SnackbarHostState, onBack: () -> Unit) {
-    var pendingDelete by remember { mutableStateOf<dev.haljk.glow.data.GalleryItem?>(null) }
+private fun LibraryScreen(vm: GlowViewModel, snackbar: SnackbarHostState, onBack: () -> Unit) {
+    // 归档箱 is not a separate place: it is the same list with a filter, so a result has
+    // one home instead of two screens that both claim to show "what you made".
+    var archivedOnly by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var pendingDelete by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val list = if (archivedOnly) vm.archivedItems else vm.activeItems
+    val selecting = selected.isNotEmpty()
+
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             Column(Modifier.fillMaxWidth()) {
                 TopAppBar(
-                    title = { Text("归档箱（${vm.archivedCount}）", style = MaterialTheme.typography.headlineSmall) },
-                    navigationIcon = { BackIcon(onBack) },
+                    title = {
+                        Text(
+                            if (selecting) "已选 ${selected.size} 项" else "全部作品",
+                            style = MaterialTheme.typography.headlineSmall,
+                        )
+                    },
+                    navigationIcon = {
+                        if (selecting) {
+                            IconButton(
+                                onClick = { selected = emptySet() },
+                                modifier = Modifier.size(48.dp),
+                            ) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "退出多选",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        } else {
+                            BackIcon(onBack)
+                        }
+                    },
+                    actions = {
+                        if (selecting) {
+                            TextButton(
+                                onClick = { selected = list.map { it.name }.toSet() },
+                                modifier = Modifier.heightIn(min = 48.dp),
+                            ) { Text("全选") }
+                        }
+                    },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.background,
                     ),
                 )
+                if (!selecting) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        ChoiceChip(
+                            label = "全部 ${vm.activeCount}",
+                            selected = !archivedOnly,
+                            onClick = { archivedOnly = false },
+                        )
+                        ChoiceChip(
+                            label = "已归档 ${vm.archivedCount}",
+                            selected = archivedOnly,
+                            onClick = { archivedOnly = true },
+                        )
+                    }
+                }
                 HorizontalDivider(
                     thickness = 1.dp,
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
                 )
             }
         },
+        bottomBar = {
+            if (selecting) {
+                Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 8.dp) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Button(
+                            onClick = {
+                                list.filter { it.name in selected }.forEach {
+                                    vm.archive(it, archived = !archivedOnly)
+                                }
+                                selected = emptySet()
+                            },
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            ),
+                        ) { Text(if (archivedOnly) "移出归档" else "归档") }
+                        Button(
+                            onClick = { pendingDelete = selected },
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                            ),
+                        ) { Text("删除") }
+                    }
+                }
+            }
+        },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
-            if (vm.archivedItems.isEmpty()) {
+            if (list.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        "归档箱是空的。\n在结果上点「归档」就会收到这里，文件不会被删。",
+                        if (archivedOnly) "没有归档的作品。\n在结果上点「归档」就会收进来，文件不会被删。"
+                        else "还没有作品。回到工作台写一句描述就能生成第一张。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(24.dp),
@@ -904,49 +996,46 @@ private fun ArchiveScreen(vm: GlowViewModel, snackbar: SnackbarHostState, onBack
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    items(vm.archivedItems, key = { it.name }) { item ->
-                        Column {
-                            GalleryTile(item = item, file = vm.fileOf(item), onOpen = { vm.viewing = item })
-                            Row {
-                                TextButton(
-                                    onClick = { vm.archive(item, archived = false) },
-                                    modifier = Modifier.heightIn(min = 44.dp),
-                                ) { Text("移出") }
-                                TextButton(
-                        onClick = { pendingDelete = item },
-                                    modifier = Modifier.heightIn(min = 44.dp),
-                                ) { Text("删除", color = MaterialTheme.colorScheme.error) }
-                            }
-                        }
+                    items(list, key = { it.name }) { item ->
+                        GalleryTile(
+                            item = item,
+                            file = vm.fileOf(item),
+                            onOpen = {
+                                if (selecting) {
+                                    selected = if (item.name in selected) selected - item.name else selected + item.name
+                                } else {
+                                    vm.viewing = item
+                                }
+                            },
+                            onLongPress = { selected = selected + item.name },
+                            selected = item.name in selected,
+                        )
                     }
                 }
             }
         }
     }
-    val toDelete = pendingDelete
-    if (toDelete != null) {
+
+    if (pendingDelete.isNotEmpty()) {
+        val names = pendingDelete
         AlertDialog(
-            onDismissRequest = { pendingDelete = null },
-            title = { Text("删除这张？") },
+            onDismissRequest = { pendingDelete = emptySet() },
+            title = { Text("删除 ${names.size} 项？") },
             text = {
-                Column {
-                    Text(toDelete.prompt.takeIf { it.isNotBlank() } ?: toDelete.name)
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "图片、描述与参考图副本会一起删掉，不能恢复。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                Text(
+                    "这 ${names.size} 项的图片、描述与参考图副本会一起删掉，不能恢复。",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
             },
             confirmButton = {
                 TextButton(onClick = {
-                    vm.delete(toDelete)
-                    pendingDelete = null
+                    list.filter { it.name in names }.forEach { vm.delete(it) }
+                    pendingDelete = emptySet()
+                    selected = emptySet()
                 }) { Text("删除", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+                TextButton(onClick = { pendingDelete = emptySet() }) { Text("取消") }
             },
         )
     }

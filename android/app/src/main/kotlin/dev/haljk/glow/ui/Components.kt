@@ -6,6 +6,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -342,9 +343,25 @@ private fun mmss(seconds: Int): String {
 }
 
 @Composable
-fun GalleryTile(item: GalleryItem, file: java.io.File?, onOpen: () -> Unit) {
+fun GalleryTile(
+    item: GalleryItem,
+    file: java.io.File?,
+    onOpen: () -> Unit,
+    onLongPress: (() -> Unit)? = null,
+    selected: Boolean = false,
+) {
     val bitmap = rememberFileBitmap(file, targetPx = 420)
-    Column(Modifier.fillMaxWidth().clickable { onOpen() }) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .then(
+                if (onLongPress != null) {
+                    Modifier.combinedClickable(onClick = onOpen, onLongClick = onLongPress)
+                } else {
+                    Modifier.clickable { onOpen() }
+                },
+            ),
+    ) {
         Box(
             Modifier
                 .fillMaxWidth()
