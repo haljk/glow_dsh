@@ -82,6 +82,9 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
     var advancedOpen by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
     var showPairing by remember { mutableStateOf(false) }
+    var scanning by remember { mutableStateOf(false) }
+    var pendingImport by remember { mutableStateOf<PairingConfig?>(null) }
+    var scanError by remember { mutableStateOf<String?>(null) }
     // Saving used to look like nothing happened: the settings went to disk and the
     // probe dots, which were already "已连接", stayed "已连接". A line that answers
     // "did the save work, and can the phone reach the services" is the feedback.
@@ -157,6 +160,16 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
                     contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                 ),
             ) { Text("生成配置二维码") }
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { scanError = null; scanning = true },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+            ) { Text("扫码导入") }
         }
 
                 GlowCard {
@@ -444,6 +457,85 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
             },
             dismissButton = {
                 TextButton(onClick = { showPairing = false }) { Text("关闭") }
+            },
+        )
+    }
+    if (scanning) {
+        AlertDialog(
+            onDismissRequest = { scanning = false },
+            title = { Text("扫描配置码") },
+            text = {
+                QrScanner(
+                    onScanned = { text ->
+                        scanning = false
+                        PairingConfig.decode(text).fold(
+                            onSuccess = { pendingImport = it },
+                            onFailure = { scanError = it.message ?: "这个码读不出来" },
+                        )
+                    },
+                    onBlocked = {
+                        scanning = false
+                        scanError = it
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { scanning = false }) { Text("取消") }
+            },
+        )
+    }
+
+    scanError?.let { message ->
+        AlertDialog(
+            onDismissRequest = { scanError = null },
+            title = { Text("没能导入") },
+            text = { Text(message, style = MaterialTheme.typography.bodyMedium) },
+            confirmButton = { TextButton(onClick = { scanError = null }) { Text("知道了") } },
+        )
+    }
+
+    pendingImport?.let { cfg ->
+        // Nothing is written until the user sees what would change: a code from another
+        // network silently repointing the app is the failure this dialog exists to stop.
+        fun url(port: Int) = "http://${cfg.host}:$port"
+        val changes = listOf(
+            Triple("电脑地址", current.imageBaseUrl, url(cfg.imagePort)),
+            Triple("出图服务", current.imageBaseUrl, url(cfg.imagePort)),
+            Triple("写作助手", current.llmBaseUrl, url(cfg.helperPort)),
+            Triple("回退服务", current.imageSyncBaseUrl, url(cfg.legacyPort)),
+            Triple("模式", current.imageApiMode, cfg.mode),
+            Triple("模型", current.llmModel, cfg.model),
+        ).distinctBy { it.second to it.third }.filter { it.second != it.third }
+        AlertDialog(
+            onDismissRequest = { pendingImport = null },
+            title = { Text("导入这些改动？") },
+            text = {
+                Column {
+                    if (changes.isEmpty()) {
+                        Text("本机已经和这个码一致，不需要改动。")
+                    } else {
+                        changes.forEach { (label, old, new) ->
+                            Text("$label：$old → $new", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.saveSettings(
+                        current.copy(
+                            imageApiMode = cfg.mode,
+                            imageBaseUrl = url(cfg.imagePort),
+                            llmBaseUrl = url(cfg.helperPort),
+                            imageSyncBaseUrl = url(cfg.legacyPort),
+                            llmModel = cfg.model,
+                        ),
+                    )
+                    pendingImport = null
+                }) { Text("写入") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingImport = null }) { Text("取消") }
             },
         )
     }

@@ -12,12 +12,15 @@
     <!-- Holds the CPU and Wi-Fi awake while a generation is in flight, so a screen
          lock cannot stall the socket. Released as soon as the job ends. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Only used by the pairing QR scanner; requested on first scan, not at launch. -->
+    <uses-permission android:name="android.permission.CAMERA" />
     <!-- Saving a result to the gallery needs this only before Android 10. -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
-    <application
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+<application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"

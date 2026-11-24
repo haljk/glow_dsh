@@ -106,6 +106,11 @@ dependencies {
   implementation(libs.okhttp)
     // QR generation for the pairing code; ~500 KB, pure Java.
     implementation("com.google.zxing:core:3.5.3")
+    // Camera preview for the pairing QR; no ML Kit, the decoder above is enough.
+    implementation("androidx.camera:camera-core:1.5.0")
+    implementation("androidx.camera:camera-camera2:1.5.0")
+    implementation("androidx.camera:camera-lifecycle:1.5.0")
+    implementation("androidx.camera:camera-view:1.5.0")
 
   // Reference photos: EXIF rotation before upload
   implementation(libs.androidx.exifinterface)
