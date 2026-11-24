@@ -233,7 +233,8 @@ fun PrimaryAction(
             disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
             // At full ink the disabled label was the heaviest text on the screen and
             // read as a secondary button rather than a refused one.
-            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+            // 45% ink on surfaceVariant measured 1.93:1 — the button looked absent rather than unavailable.
+                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
         ),
     ) {
         if (busy) {
@@ -369,8 +370,36 @@ fun GalleryTile(
                 .clip(RoundedCornerShape(12.dp))
                 // Same shape and colour whether or not the bitmap has arrived: a
                 // "载入中" label next to loaded images reads as a broken file.
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                // Selection has to be visible on the picture itself: a count in the
+                // title ("已选 1 项") does not tell you which one, and batch delete
+                // makes guessing expensive.
+                .then(
+                    if (selected) {
+                        Modifier.border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp))
+                    } else {
+                        Modifier
+                    },
+                ),
         ) {
+            if (selected) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .size(26.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Check,
+                        contentDescription = "已选中",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(17.dp),
+                    )
+                }
+            }
             if (bitmap != null) {
                 Image(
                     bitmap = bitmap,
@@ -393,7 +422,8 @@ fun GalleryTile(
         Text(
             relativeTime(item.createdAt),
             style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+            // 75% ink measured 3.44:1 on the page; a 14sp line needs 4.5:1.
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
@@ -432,6 +462,15 @@ fun ChoiceChip(
             .background(
                 if (selected) MaterialTheme.colorScheme.primaryContainer
                 else MaterialTheme.colorScheme.surfaceVariant,
+            )
+            // Selected and unselected were 1.08:1 apart, so the state rode on hue
+            // alone. A 1dp outline gives it a shape, and the outline role sits at
+            // 3:1 so the chip boundary is visible on the sheet too.
+            .border(
+                width = if (selected) 1.5.dp else 1.dp,
+                color = if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.outline,
+                shape = shape,
             )
             .clickable { onClick() }
             .padding(horizontal = 8.dp, vertical = 6.dp),

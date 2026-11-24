@@ -46,10 +46,19 @@ private val LightColors = lightColorScheme(
     surfaceVariant = Color(0xFFEEEEF3),
     onSurfaceVariant = Color(0xFF5D5D69),
     // Inputs sit at 3:1; card hairlines are a quiet 1.2:1 on the neutral page.
-    outline = Color(0xFF9696A2),
+    // 2.92:1 against white failed the 3:1 non-text threshold on input borders.
+    outline = Color(0xFF8A8A96),
     outlineVariant = Color(0xFFE6E6EC),
     error = Color(0xFFC4311F),
     onError = Color(0xFFFFFFFF),
+    // Dialogs, sheets and menus default to surfaceContainer* roles, which were tinted
+    // violet while cards are white. Pointing them at the card colour removes three
+    // competing "floating surface" colours at once.
+    surfaceContainerLowest = Color(0xFFFFFFFF),
+    surfaceContainerLow = Color(0xFFFFFFFF),
+    surfaceContainer = Color(0xFFFFFFFF),
+    surfaceContainerHigh = Color(0xFFFFFFFF),
+    surfaceContainerHighest = Color(0xFFF2F2F6),
     errorContainer = Color(0xFFFDE6E2),
     onErrorContainer = Color(0xFF5E1408),
 )
@@ -72,6 +81,11 @@ private val DarkColors = darkColorScheme(
     outlineVariant = Color(0xFF2D2D36),
     error = Color(0xFFFF9C8F),
     onError = Color(0xFF4D1F1A),
+    surfaceContainerLowest = Color(0xFF16161B),
+    surfaceContainerLow = Color(0xFF1E1E25),
+    surfaceContainer = Color(0xFF1E1E25),
+    surfaceContainerHigh = Color(0xFF23232B),
+    surfaceContainerHighest = Color(0xFF2B2B34),
     errorContainer = Color(0xFF4D1F1A),
     onErrorContainer = Color(0xFFFFDAD4),
 )

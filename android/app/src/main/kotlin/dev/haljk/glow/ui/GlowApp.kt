@@ -563,7 +563,12 @@ private fun WorkbenchScreen(
     }
 
     if (showOutputSheet) {
-        ModalBottomSheet(onDismissRequest = { showOutputSheet = false }) {
+        ModalBottomSheet(
+            onDismissRequest = { showOutputSheet = false },
+            // Sheets and dialogs inherited a violet container while cards are white;
+            // one surface token everywhere keeps purple for state and the primary action.
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
             OutputSheet(vm) { showOutputSheet = false }
         }
     }
@@ -610,7 +615,12 @@ private fun WorkbenchScreen(
  */
 @Composable
 private fun OutputSheet(vm: GlowViewModel, onDismiss: () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+    ) {
         Text("输出设置", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(4.dp))
         Text(
