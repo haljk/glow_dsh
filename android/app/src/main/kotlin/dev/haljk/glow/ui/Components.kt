@@ -488,6 +488,16 @@ fun ChoiceChip(
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            if (selected) {
+                // Fill versus no-fill is 1.08:1 apart, so the tick carries the state
+                // for anyone who cannot separate those two greys.
+                Icon(
+                    Icons.Filled.Check,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(13.dp),
+                )
+            }
             Text(
                 label,
                 style = MaterialTheme.typography.labelMedium,
