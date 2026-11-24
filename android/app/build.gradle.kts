@@ -104,6 +104,8 @@ dependencies {
 
   // Networking: the model services, with explicit long timeouts
   implementation(libs.okhttp)
+    // QR generation for the pairing code; ~500 KB, pure Java.
+    implementation("com.google.zxing:core:3.5.3")
 
   // Reference photos: EXIF rotation before upload
   implementation(libs.androidx.exifinterface)

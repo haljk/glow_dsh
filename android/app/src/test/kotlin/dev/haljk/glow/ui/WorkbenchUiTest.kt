@@ -7,6 +7,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import dev.haljk.glow.ui.theme.GlowTheme
 import org.junit.Rule
@@ -98,6 +99,6 @@ class WorkbenchUiTest {
         compose.onNodeWithText("队列地址").assertIsDisplayed()
         compose.onNodeWithText("同步").assertExists()
         compose.onNodeWithText("提示词服务地址").assertIsDisplayed()
-        compose.onNodeWithText("保存并生效").assertIsDisplayed()
+        compose.onNodeWithText("保存并生效").performScrollTo().assertIsDisplayed()
     }
 }

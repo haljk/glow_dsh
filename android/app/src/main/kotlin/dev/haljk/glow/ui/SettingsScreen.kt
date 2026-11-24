@@ -1,5 +1,7 @@
 package dev.haljk.glow.ui
 
+import androidx.compose.foundation.Image
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -39,17 +41,20 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import dev.haljk.glow.data.ModelClient
+import dev.haljk.glow.core.PairingConfig
 import dev.haljk.glow.data.Settings
 import dev.haljk.glow.ui.theme.ContentMaxWidth
 import dev.haljk.glow.ui.theme.glow
@@ -76,6 +81,7 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
     var keepRefs by remember(current) { mutableStateOf(current.keepReferenceCopies) }
     var advancedOpen by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
+    var showPairing by remember { mutableStateOf(false) }
     // Saving used to look like nothing happened: the settings went to disk and the
     // probe dots, which were already "已连接", stayed "已连接". A line that answers
     // "did the save work, and can the phone reach the services" is the feedback.
@@ -138,6 +144,21 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
                 )
 
                 GroupTitle("连接")
+        // Pairing: the phone that already works becomes the source of truth for the
+        // next device, instead of typing an address and three ports again.
+        GlowCard {
+            SectionHeader(title = "扫码配对", hint = "把当前配置变成二维码，另一台设备扫一下就填好")
+            Button(
+                onClick = { showPairing = true },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                ),
+            ) { Text("生成配置二维码") }
+        }
+
                 GlowCard {
                     Text(
                         "队列模式：提交任务后由服务排队，手机只负责轮询取图。同步模式退回旧接口，一次请求要等到出图。",
@@ -368,6 +389,61 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
             },
             dismissButton = {
                 TextButton(onClick = { confirmReset = false }) { Text("取消") }
+            },
+        )
+    }
+    if (showPairing) {
+        val payload = remember(current) {
+            PairingConfig(
+                host = current.imageBaseUrl.substringAfter("://").substringBefore(':').substringBefore('/'),
+                imagePort = current.imageBaseUrl.substringAfterLast(':', "9742").takeWhile { it.isDigit() }.toIntOrNull() ?: 9742,
+                helperPort = current.llmBaseUrl.substringAfterLast(':', "9739").takeWhile { it.isDigit() }.toIntOrNull() ?: 9739,
+                legacyPort = current.imageSyncBaseUrl.substringAfterLast(':', "9741").takeWhile { it.isDigit() }.toIntOrNull() ?: 9741,
+                mode = current.imageApiMode,
+                model = current.llmModel,
+                timeout = when {
+                    current.imageTimeoutSeconds <= 300 -> "fast"
+                    current.imageTimeoutSeconds <= 900 -> "std"
+                    else -> "patient"
+                },
+            )
+        }
+        val qr = remember(payload) { pairingQrBitmap(payload.encode()) }
+        val scope = rememberCoroutineScope()
+        val context = LocalContext.current
+        AlertDialog(
+            onDismissRequest = { showPairing = false },
+            title = { Text("配置二维码") },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (qr != null) {
+                        Image(
+                            bitmap = qr.asImageBitmap(),
+                            contentDescription = "配置二维码",
+                            modifier = Modifier.size(220.dp).clip(RoundedCornerShape(8.dp)),
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "另一台设备在设置里扫码即可填入地址、端口与模式；不包含任何密码。",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val bitmap = qr ?: return@TextButton
+                        scope.launch {
+                            val ok = saveQrToGallery(context, bitmap, "glow-pairing.png")
+                            vm.post(if (ok) "二维码已存到相册" else "存相册失败，可以截图保存")
+                        }
+                    },
+                ) { Text("存到相册") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPairing = false }) { Text("关闭") }
             },
         )
     }
