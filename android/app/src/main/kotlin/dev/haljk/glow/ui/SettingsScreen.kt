@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -39,6 +40,8 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -46,6 +49,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import dev.haljk.glow.data.ModelClient
 import dev.haljk.glow.data.Settings
 import dev.haljk.glow.ui.theme.ContentMaxWidth
 import dev.haljk.glow.ui.theme.glow
@@ -72,6 +76,18 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
     var keepRefs by remember(current) { mutableStateOf(current.keepReferenceCopies) }
     var advancedOpen by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
+    // Saving used to look like nothing happened: the settings went to disk and the
+    // probe dots, which were already "已连接", stayed "已连接". A line that answers
+    // "did the save work, and can the phone reach the services" is the feedback.
+    var savedAt by remember { mutableStateOf<Long?>(null) }
+    var awaitingProbe by remember { mutableStateOf(false) }
+
+    LaunchedEffect(vm.probing, vm.imageProbe, vm.llmProbe) {
+        if (awaitingProbe && !vm.probing) {
+            awaitingProbe = false
+            savedAt = System.currentTimeMillis()
+        }
+    }
 
     fun draft() = Settings(
         imageApiMode = mode,
@@ -251,30 +267,80 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
 
                 Spacer(Modifier.height(20.dp))
                 Button(
-                    onClick = { vm.saveSettings(draft()) },
+                    onClick = {
+                        awaitingProbe = true
+                        savedAt = System.currentTimeMillis()
+                        vm.saveSettings(draft())
+                    },
+                    enabled = !vm.probing,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp),
                     shape = RoundedCornerShape(14.dp),
-                ) { Text("保存并生效", style = MaterialTheme.typography.titleLarge) }
+                    // The default disabled pair measures 1.63:1, and this label is doing
+                    // work here ("正在保存…"), not merely decorating a dead control.
+                    colors = ButtonDefaults.buttonColors(
+                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                ) {
+                    Text(
+                        if (vm.probing) "正在保存…" else "保存并生效",
+                        style = MaterialTheme.typography.titleLarge,
+                    )
+                }
+                SaveFeedback(
+                    vm = vm,
+                    saved = savedAt != null,
+                    probing = vm.probing,
+                )
 
+                // Order follows the reading: what happened (feedback), where it happened
+                // (two status rows with their endpoints), then the manual action. Stacking
+                // the button between them switched alignment twice in 59px.
+                ProbeRow("出图服务", vm.imageProbe, vm.settings.imageEndpoint, vm.probing)
+                ProbeRow("提示词服务", vm.llmProbe, vm.settings.llmEndpoint, vm.probing)
+
+                // Greyed out, label unchanged: during a probe the progress belongs to the
+                // feedback line and the two status rows, not to a second purple "testing"
+                // that reads like another action.
                 TextButton(
                     onClick = { vm.probeServices() },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
-                ) { Text(if (vm.probing) "正在测试…" else "测试连接") }
-
-                ProbeRow("出图服务", vm.imageProbe?.ok)
-                ProbeRow("提示词服务", vm.llmProbe?.ok)
+                    enabled = !vm.probing,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(top = 8.dp),
+                ) { Text("测试连接") }
 
                 Spacer(Modifier.height(20.dp))
-                TextButton(
-                    onClick = { confirmReset = true },
-                    modifier = Modifier.heightIn(min = 48.dp),
-                ) { Text("恢复默认地址", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                Text(
+                    "恢复默认地址",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { confirmReset = true }
+                        .padding(horizontal = 4.dp, vertical = 12.dp),
+                )
 
                 Text(
-                    "设置存在应用私有目录里，不进任何仓库。换手机重新填一次即可。",
+                    "设置存在应用私有目录，不进仓库；换手机重填一次即可。",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp, bottom = 32.dp),
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                // Which build is on this phone. Without it, "did the new APK actually
+                // install?" could only be answered with adb, and a stale install looked
+                // exactly like a broken feature.
+                Text(
+                    "版本 " + rememberAppVersion().replace("-", " · "),
+                    style = MaterialTheme.typography.labelMedium,
+                    // outline measured 2.98:1 — too pale for 12sp text that exists to be
+                    // read. 85% of onSurfaceVariant is 4.6:1 and still a shade lighter
+                    // than the note above it.
+                    // 92% lands at 4.49:1 — the 85% version measured 4.13, just under the
+                    // usual floor for small text, and still 1.27x lighter than the note.
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.92f),
+                    // 24dp above separates it from the note; the column's own bottom
+                    // inset keeps it ~32dp off the gesture bar instead of floating 91dp
+                    // above the bottom of the screen.
+                    modifier = Modifier.padding(top = 24.dp),
                 )
             }
         }
@@ -340,26 +406,103 @@ private fun Field(
     )
 }
 
+/** Version name straight from the package manager, so it always matches the APK. */
 @Composable
-private fun ProbeRow(label: String, ok: Boolean?) {
-    val color = when (ok) {
-        true -> MaterialTheme.glow.success
-        false -> MaterialTheme.colorScheme.error
-        null -> MaterialTheme.colorScheme.outline
+private fun rememberAppVersion(): String {
+    val context = LocalContext.current
+    return remember {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull() ?: "未知"
+    }
+}
+
+@Composable
+private fun ProbeRow(
+    label: String,
+    probe: ModelClient.ProbeResult?,
+    endpoint: String,
+    probing: Boolean = false,
+) {
+    // While a probe is running the previous result is stale; showing a green dot next
+    // to "已连接" contradicts the "正在测试" line right above it.
+    val color = when {
+        probing -> MaterialTheme.colorScheme.outline
+        probe?.ok == true -> MaterialTheme.glow.success
+        probe?.ok == false -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.outline
     }
     Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.Top,
+        modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
     ) {
-        Box(Modifier.size(8.dp).clip(CircleShape).background(color))
-        Spacer(Modifier.width(8.dp))
-        Text(
-            "$label · " + when (ok) {
-                true -> "已连接"
-                false -> "连不上"
-                null -> "未测试"
-            },
-            style = MaterialTheme.typography.labelLarge,
+        Box(
+            Modifier
+                .padding(top = 7.dp)
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(color),
         )
+        Spacer(Modifier.width(8.dp))
+        Column {
+            Text(
+                "$label · " + when {
+                    probing -> "测试中…"
+                    probe?.ok == true -> "已连接"
+                    probe?.ok == false -> "连不上"
+                    else -> "未测试"
+                },
+                style = MaterialTheme.typography.labelLarge,
+            )
+            // The address is the first thing to check, and it is the one fact the dot
+            // cannot carry. A degraded-but-reachable service keeps its own words, since
+            // "connected" would be a lie about the upstream.
+            if (probe != null) {
+                val detail = probe.detail
+                val degraded = probe.ok && detail.isNotBlank() &&
+                    !detail.startsWith("已连接") && !detail.startsWith("队列已连接")
+                val second = when {
+                    probing -> endpoint
+                    degraded -> detail
+                    probe.ok -> endpoint
+                    else -> "$endpoint 无响应"
+                }
+                Text(
+                    second,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
     }
+}
+
+/**
+ * One line under the save button that answers both questions at once: was the file
+ * written, and can this phone actually reach the services now.
+ */
+@Composable
+private fun SaveFeedback(vm: GlowViewModel, saved: Boolean, probing: Boolean) {
+    if (!saved) return
+    val image = vm.imageProbe
+    val llm = vm.llmProbe
+    // The address lives on the status row below, where it is being diagnosed. Keeping it
+    // here as well wrapped this line onto a second one ending in an orphan, and repeated
+    // "连不上" three times in two lines.
+    val (text, color) = when {
+        probing -> "已保存，正在测试…" to MaterialTheme.colorScheme.onSurfaceVariant
+        image?.ok == true && llm?.ok == true -> "已保存，两台服务都连上了" to MaterialTheme.glow.success
+        image?.ok == false && llm?.ok == false ->
+            "已保存，但两台服务都连不上" to MaterialTheme.colorScheme.error
+        image?.ok == false -> "已保存，但出图服务连不上" to MaterialTheme.colorScheme.error
+        llm?.ok == false -> "已保存，但提示词服务连不上" to MaterialTheme.colorScheme.error
+        else -> "已保存" to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Text(
+        text,
+        style = MaterialTheme.typography.labelLarge,
+        color = color,
+        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+    )
 }

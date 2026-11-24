@@ -38,13 +38,24 @@ New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
 & robocopy.exe $repoAndroid $buildRoot /MIR /XD build .gradle .kotlin /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed with $LASTEXITCODE" }
 
+# A delivered APK must be distinguishable from the last one. Derive both numbers from
+# git so this cannot be forgotten: the commit count only ever goes up, and the short
+# SHA makes a build traceable back to its source.
+$repoRoot = Join-Path $PSScriptRoot '..'
+$versionCode = (git -C $repoRoot rev-list --count HEAD 2>$null)
+$shortSha = (git -C $repoRoot rev-parse --short HEAD 2>$null)
+if (-not $versionCode) { $versionCode = '1' }
+if (-not $shortSha) { $shortSha = 'nogit' }
+$versionName = "1.1.$versionCode-$shortSha"
+Write-Host "==> version $versionName (versionCode $versionCode)" -ForegroundColor Cyan
+
 $tasks = @(':app:assembleDebug')
 if ($Test) { $tasks += ':app:testDebugUnitTest' }
 
 Write-Host "==> gradle $($tasks -join ' ')" -ForegroundColor Cyan
 Push-Location $buildRoot
 try {
-    & $gradle @tasks --no-daemon --console=plain
+    & $gradle @tasks --no-daemon --console=plain "-PglowVersionCode=$versionCode" "-PglowVersionName=$versionName"
     if ($LASTEXITCODE -ne 0) { throw "gradle failed with $LASTEXITCODE" }
 } finally {
     Pop-Location

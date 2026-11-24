@@ -11,8 +11,13 @@ android {
     applicationId = "dev.haljk.glow"
     minSdk = 26
     targetSdk = 36
-    versionCode = 2
-    versionName = "1.1"
+    // Derived per build, not typed by hand: shipping three different APKs all
+    // labelled 1.1 made them indistinguishable, and a vendor installer is free to
+    // treat a same-version package as "already installed". The build script passes
+    // the commit count and the short SHA; the fallbacks only apply to a bare
+    // `gradle assemble`, where nothing was passed.
+    versionCode = (project.findProperty("glowVersionCode") as String?)?.toIntOrNull() ?: 1
+    versionName = (project.findProperty("glowVersionName") as String?) ?: "1.1-unknown"
   }
 
   buildTypes {
