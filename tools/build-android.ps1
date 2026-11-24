@@ -49,9 +49,13 @@ if (-not $shortSha) { $shortSha = 'nogit' }
 $versionName = "1.1.$versionCode-$shortSha"
 Write-Host "==> version $versionName (versionCode $versionCode)" -ForegroundColor Cyan
 
-# A changed version does not make Gradle's manifest/package tasks stale on its own, so
-# the APK would keep the previous number. Drop the outputs that carry it.
-foreach ($stale in @('app\build\intermediates\merged_manifests', 'app\build\outputs\apk')) {
+# A changed version does not make Gradle's manifest/package tasks stale on their own
+# (the version comes from the DSL, not from a declared file input), so the APK would
+# keep the previous number. Touch the manifest — a real input — and drop the outputs
+# that carry the version, or the timestamp, into the package.
+$manifest = Join-Path $buildRoot 'app\src\main\AndroidManifest.xml'
+if (Test-Path $manifest) { (Get-Item $manifest).LastWriteTime = Get-Date }
+foreach ($stale in @('app\build\intermediates\merged_manifests', 'app\build\intermediates\merged_manifest', 'app\build\outputs\apk')) {
   $full = Join-Path $buildRoot $stale
   if (Test-Path $full) { Remove-Item -Recurse -Force $full -ErrorAction SilentlyContinue }
 }
