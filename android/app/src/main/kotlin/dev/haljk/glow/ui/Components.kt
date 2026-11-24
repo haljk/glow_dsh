@@ -367,7 +367,7 @@ fun GalleryTile(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(if (item.ratio > 0.4f) 1f else 0.72f)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(16.dp))
                 // Same shape and colour whether or not the bitmap has arrived: a
                 // "载入中" label next to loaded images reads as a broken file.
                 .background(MaterialTheme.colorScheme.surfaceVariant)
@@ -376,12 +376,21 @@ fun GalleryTile(
                 // makes guessing expensive.
                 .then(
                     if (selected) {
-                        Modifier.border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp))
+                        Modifier.border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(16.dp))
                     } else {
                         Modifier
                     },
                 ),
         ) {
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = item.note.ifBlank { "生成结果" },
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            // Drawn after the image on purpose: a badge declared before a fillMaxSize
+            // Image ends up underneath it, which is why the first attempt showed no tick.
             if (selected) {
                 Box(
                     Modifier
@@ -400,13 +409,6 @@ fun GalleryTile(
                     )
                 }
             }
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap,
-                    contentDescription = item.note.ifBlank { "生成结果" },
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                )
             }
         }
         if (item.note.isNotBlank()) {

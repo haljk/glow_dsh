@@ -631,29 +631,23 @@ private fun OutputSheet(vm: GlowViewModel, onDismiss: () -> Unit) {
         Spacer(Modifier.height(14.dp))
         Text("比例", style = MaterialTheme.typography.labelLarge)
         Spacer(Modifier.height(6.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            if (vm.scenario != Scenario.TEXT) {
+        // Five ratios on one row: the old 3+2 split left 29% of the second row empty,
+        // which reads as a layout fault rather than as a group. 跟随原图 gets its own
+        // row when it applies — it is a different kind of answer from a fixed ratio.
+        if (vm.scenario != Scenario.TEXT) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 ChoiceChip(
                     label = "跟随原图",
+                    secondLine = if (vm.autoSize) "当前" else null,
                     selected = vm.autoSize,
                     modifier = Modifier.weight(1f),
                     onClick = { vm.autoSize = true },
                 )
             }
-            AspectRatio.entries.take(if (vm.scenario == Scenario.TEXT) 3 else 2).forEach { entry ->
-                ChoiceChip(
-                    label = entry.id,
-                    secondLine = entry.label,
-                    selected = !vm.autoSize && vm.ratio == entry,
-                    modifier = Modifier.weight(1f),
-                    onClick = { vm.autoSize = false; vm.ratio = entry },
-                )
-            }
+            Spacer(Modifier.height(8.dp))
         }
-        Spacer(Modifier.height(8.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            val rest = if (vm.scenario == Scenario.TEXT) AspectRatio.entries.drop(3) else AspectRatio.entries.drop(2)
-            rest.forEach { entry ->
+            AspectRatio.entries.forEach { entry ->
                 ChoiceChip(
                     label = entry.id,
                     secondLine = entry.label,
@@ -662,7 +656,6 @@ private fun OutputSheet(vm: GlowViewModel, onDismiss: () -> Unit) {
                     onClick = { vm.autoSize = false; vm.ratio = entry },
                 )
             }
-            repeat(3 - rest.size) { Spacer(Modifier.weight(1f)) }
         }
         Spacer(Modifier.height(16.dp))
         Text("清晰度", style = MaterialTheme.typography.labelLarge)
