@@ -437,7 +437,9 @@ private fun WorkbenchScreen(
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     GlowCard {
                         SectionHeader(
-                            title = if (vm.scenario == Scenario.TEXT) "画面尺寸" else "输出清晰度",
+                            // The 张数 control lives in this card, so the title has
+                            // to cover it; "画面尺寸" alone made the extra row look stray.
+                            title = if (vm.scenario == Scenario.TEXT) "尺寸与张数" else "输出清晰度",
                             hint = vm.resolvedSizeLabel(),
                         )
                         if (vm.scenario == Scenario.TEXT) {
@@ -489,9 +491,17 @@ private fun WorkbenchScreen(
                             style = MaterialTheme.typography.titleMedium,
                             modifier = Modifier.weight(1f),
                         )
-                        TextButton(onClick = onOpenArchive, modifier = Modifier.heightIn(min = 48.dp)) {
-                            Text("归档箱（${vm.archivedCount}）")
-                        }
+                    // Same trap as the 帮我写 link: TextButton centres its label inside a
+                    // 58dp minimum, which pulled this one 12dp off the 16dp rail.
+                    Text(
+                        "归档箱（${vm.archivedCount}）",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onOpenArchive() }
+                            .padding(horizontal = 4.dp, vertical = 12.dp),
+                    )
                     }
                 }
 
@@ -587,7 +597,9 @@ private fun StatusStrip(vm: GlowViewModel) {
 @Composable
 private fun SizeFlow(vm: GlowViewModel) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        vm.sizeChoices.chunked(3).forEach { row ->
+        // Four per row: seven options in three columns left the last row two thirds
+        // empty, which read as a failed grid rather than a list.
+        vm.sizeChoices.chunked(4).forEach { row ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 row.forEachIndexed { offset, choice ->
                     val index = vm.sizeChoices.indexOf(choice)
@@ -600,7 +612,7 @@ private fun SizeFlow(vm: GlowViewModel) {
                         onClick = { vm.sizeChoiceIndex = index },
                     )
                 }
-                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
             }
         }
     }

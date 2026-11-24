@@ -208,7 +208,9 @@ fun PrimaryAction(
             containerColor = if (busy) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.primary,
             contentColor = if (busy) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onPrimary,
             disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            // At full ink the disabled label was the heaviest text on the screen and
+            // read as a secondary button rather than a refused one.
+            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
         ),
     ) {
         if (busy) {

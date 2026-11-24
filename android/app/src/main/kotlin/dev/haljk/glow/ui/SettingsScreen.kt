@@ -109,7 +109,10 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
                     .navigationBarsPadding()
-                    .padding(horizontal = 16.dp),
+                    // 8dp past the gesture bar: scrolled to the end, the last button
+                    // used to sit flush against the viewport edge with its rounded
+                    // corner clipped by it.
+                    .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
             ) {
                 Text(
                     "阁楼自己不出图，它把活儿交给这两台服务。填你在手机上能访问到的地址。",
@@ -151,25 +154,30 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
                     )
                     Spacer(Modifier.height(10.dp))
                     Field("提示词服务地址", llmUrl, { llmUrl = it }, Settings.DEFAULT_LLM_URL)
-                    Row(
+                    // The hint sits under the toggle, not at the far end of the same
+                    // row: right-aligned and grey, it read as a second column of the
+                    // layout rather than a description of the row above it.
+                    Column(
                         Modifier
                             .fillMaxWidth()
                             .padding(top = 6.dp)
-                            .clickable { advancedOpen = !advancedOpen }
-                            .heightIn(min = 44.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { advancedOpen = !advancedOpen },
                     ) {
                         Text(
                             if (advancedOpen) "收起高级" else "高级",
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.padding(vertical = 12.dp),
                         )
-                        Text(
-                            if (advancedOpen) "" else "另一个地址、模型名",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        if (!advancedOpen) {
+                            Text(
+                                "里面是另一个服务地址和模型名",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 10.dp),
+                            )
+                        }
                     }
                     if (advancedOpen) {
                         // Both addresses are kept so switching modes never loses the
