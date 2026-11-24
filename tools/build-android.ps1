@@ -49,13 +49,22 @@ if (-not $shortSha) { $shortSha = 'nogit' }
 $versionName = "1.1.$versionCode-$shortSha"
 Write-Host "==> version $versionName (versionCode $versionCode)" -ForegroundColor Cyan
 
+# A changed version does not make Gradle's manifest/package tasks stale on its own, so
+# the APK would keep the previous number. Drop the outputs that carry it.
+foreach ($stale in @('app\build\intermediates\merged_manifests', 'app\build\outputs\apk')) {
+  $full = Join-Path $buildRoot $stale
+  if (Test-Path $full) { Remove-Item -Recurse -Force $full -ErrorAction SilentlyContinue }
+}
+
 $tasks = @(':app:assembleDebug')
 if ($Test) { $tasks += ':app:testDebugUnitTest' }
 
 Write-Host "==> gradle $($tasks -join ' ')" -ForegroundColor Cyan
 Push-Location $buildRoot
 try {
-    & $gradle @tasks --no-daemon --console=plain "-PglowVersionCode=$versionCode" "-PglowVersionName=$versionName"
+    # --no-build-cache: the manifest task's output was restored from cache with the previous
+# version baked in, so a changed version number only reached the APK one build later.
+& $gradle @tasks --no-daemon --console=plain --no-build-cache "-PglowVersionCode=$versionCode" "-PglowVersionName=$versionName"
     if ($LASTEXITCODE -ne 0) { throw "gradle failed with $LASTEXITCODE" }
 } finally {
     Pop-Location
