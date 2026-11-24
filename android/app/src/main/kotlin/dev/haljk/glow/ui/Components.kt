@@ -170,6 +170,15 @@ fun ScenarioRow(current: Scenario, compact: Boolean = false, onPick: (Scenario) 
                         if (selected) MaterialTheme.colorScheme.primaryContainer
                         else MaterialTheme.colorScheme.surface,
                     )
+                    // Cards are separated by shadow elsewhere, but these three sit
+                    // side by side with no room for one; a 1dp outline at the 3:1
+                    // role keeps the boundary visible, exactly like the chips.
+                    .border(
+                        width = if (selected) 1.5.dp else 1.dp,
+                        color = if (selected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outline,
+                        shape = shape,
+                    )
                     .clickable { onPick(entry) }
                     .padding(horizontal = 10.dp, vertical = 11.dp),
                 verticalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterVertically),

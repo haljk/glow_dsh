@@ -228,7 +228,9 @@ private fun WorkbenchScreen(
                 // reads as a rendering fault rather than as a boundary.
                 HorizontalDivider(
                     thickness = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+                        // Bar and page are 1.08:1 apart, so scrolled text was cut by
+                        // an invisible edge; the outline role is the 3:1 boundary.
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
                 )
             }
         },
@@ -237,7 +239,9 @@ private fun WorkbenchScreen(
                 Column(Modifier.fillMaxWidth().imePadding()) {
                     HorizontalDivider(
                         thickness = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+                        // Bar and page are 1.08:1 apart, so scrolled text was cut by
+                        // an invisible edge; the outline role is the 3:1 boundary.
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
                     )
                     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
                         Column(
@@ -635,7 +639,7 @@ private fun OutputSheet(vm: GlowViewModel, onDismiss: () -> Unit) {
         // which reads as a layout fault rather than as a group. 跟随原图 gets its own
         // row when it applies — it is a different kind of answer from a fixed ratio.
         if (vm.scenario != Scenario.TEXT) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ChoiceChip(
                     label = "跟随原图",
                     secondLine = if (vm.autoSize) "当前" else null,
@@ -646,12 +650,15 @@ private fun OutputSheet(vm: GlowViewModel, onDismiss: () -> Unit) {
             }
             Spacer(Modifier.height(8.dp))
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             AspectRatio.entries.forEach { entry ->
                 ChoiceChip(
                     label = entry.id,
                     secondLine = entry.label,
-                    selected = !vm.autoSize && vm.ratio == entry,
+                    // In 文生图 autoSize stays true in state but means nothing, so
+                    // "!autoSize" alone left every ratio unselected: the app row
+                    // said 1:1 while the sheet showed no selection at all.
+                    selected = (vm.scenario == Scenario.TEXT || !vm.autoSize) && vm.ratio == entry,
                     modifier = Modifier.weight(1f),
                     onClick = { vm.autoSize = false; vm.ratio = entry },
                 )
@@ -951,7 +958,7 @@ private fun LibraryScreen(vm: GlowViewModel, snackbar: SnackbarHostState, onBack
                         Modifier
                             .fillMaxWidth()
                             .navigationBarsPadding()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Button(
