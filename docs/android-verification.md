@@ -208,3 +208,54 @@
 ./tools/audit-android-ui.ps1             # 真机逐帧审计（默认不调用模型服务）
 ./tools/audit-android-ui.ps1 -WithRealGeneration   # 需要横幅类截图时才加
 ```
+
+---
+
+# 三 · 按外部原型重做的界面（2026-11-24）
+
+依据 `docs/uiux-decisions.md` 里 22 项已确认决策实施。本文只记录**验证证据**与**偏离原型的理由**，
+决策本身见那份文档。
+
+## 已实施并验证
+
+| 决策 | 实现位置 | 证据 |
+| --- | --- | --- |
+| 中性底 + 紫色只给选中/主操作 | `ui/theme/Theme.kt` | `final/01-workbench.png` |
+| 卡片去描边、浅色用阴影 | `ui/Components.kt` `GlowCard` | 同上，卡片边缘无 1dp 线 |
+| 场景卡「填充 + ✓」 | `ui/Components.kt` `ScenarioRow` | 同上，选中卡右上角对勾 |
+| 连接状态进顶栏胶囊 | `ui/Components.kt` `ConnectionPill` | 同上，标题右侧绿点胶囊 |
+| 尺寸摘要 + 弹层 | `ui/GlowApp.kt` `OutputSheet`、`core/OutputTable.kt` | `final/02-output-sheet.png` |
+| 进度进底栏 / 完成卡片 / 失败弹条 | `ui/Components.kt` `JobProgressBar`/`JobDoneBar` | 真机跑过一次生成：排队中 → 已生成 |
+| 全部作品页 + 筛选 + 多选批量 | `ui/GlowApp.kt` `LibraryScreen` | `final/03-library.png`、`04-selecting.png` |
+| 草稿按模式分开 | `GlowViewModel.prompt` + 初始化迁移 | `StateRestorationTest` |
+| 第 2 张参考图默认场景 | `GlowViewModel.addRefs` | 单测 + 代码 |
+| 预览分两段 | `GlowViewModel.previewParts` | 弹层截图（评审轮补） |
+| 删除二次确认 | 归档页与查看器 | 代码 + 弹窗 |
+| 设置主区一个地址 + 高级收技术项 | `ui/SettingsScreen.kt` | `final/05-settings-main.png`、`06-settings-advanced.png` |
+| 扫码生成 | `ui/PairingQr.kt`、`core/PairingConfig.kt` | `final/07-pairing.png` |
+| 扫码导入 + 差异确认 | `ui/ScanQr.kt`、`SettingsScreen` | 真机：权限弹窗 → 授予 → 实时预览 |
+| 查看器状态栏强制白色 | `ui/ViewerScreen.kt` | 代码；此前缺失，浅色下图标会消失 |
+
+## 与原型不同、且有据可依的地方
+
+1. **描述框回车仍换行**（原型是回车即生成）。描述常写成多行，误触一次就是几分钟排队。
+2. **不显示连接延迟**（原型有「延迟 38 ms」）。省掉一个用户会拿去和 ping 对比的数字。
+3. **不做「自动润色描述」开关**。润色本来就是手动触发的，结果回输入框可编辑、视为用户输入。
+4. **查看器标签不贴图上**。上一轮实测贴图上只有 3.8–4.1:1。
+5. **删除不提供撤销**，改为二次确认（原型是删除可撤销）。
+
+## 构建与产物
+
+```powershell
+./tools/build-android.ps1 -Test      # 74 个单测通过（含 PairingConfig 的 5 条）
+```
+
+- APK：`dist/glow-debug.apk`，15.26 MB，versionCode 43，versionName `1.1.43-3d8dc1b`
+- SHA256：`B52923EE9D4B2761B10E1174134450F7767A7D5A31475FB96390587DF9BCAF75`
+- 体积从 13.55 MB 增至 15.26 MB，来自 zxing core 与 CameraX（已在决策 R14 中得到确认）
+
+## 待办
+
+- 独立审美评审（第三轮）结论与整改
+- 深色模式下的完整截图复核
+- 扫码导入的端到端验证（需要第二台设备或另一块屏幕显示二维码）
