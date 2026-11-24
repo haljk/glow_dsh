@@ -30,6 +30,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.CircularProgressIndicator
@@ -248,115 +249,96 @@ fun PrimaryAction(
 
 
 /**
- * Job banner.
+ * Task state lives in the bottom bar.
  *
- * It carries the only sense of a process this app has: still running, how long,
- * safe to walk away, and a way out. The clock needs its own ticker because a
- * composition does not re-run on wall time.
+ * It used to be a banner at the top of the list, which meant a running job pushed the
+ * form down while the primary button sat at the bottom saying nothing. The bar is where
+ * the thumb already is, and it is one place for running, done and failed.
  */
 @Composable
-fun JobBanner(snapshot: JobRegistry.Snapshot, onDismiss: () -> Unit, onGiveUp: () -> Unit) {
-    val active = snapshot.isActive
-    // Keyed on the job only: adding the stage here rebuilt the state on every stage
-    // change while the ticker kept writing to the old one, which froze the clock at
-    // the moment of the switch.
+fun JobProgressBar(
+    snapshot: JobRegistry.Snapshot,
+    onBackground: () -> Unit,
+    onCancel: () -> Unit,
+) {
     var now by remember(snapshot.id) { mutableStateOf(System.currentTimeMillis()) }
-    if (active) {
-        LaunchedEffect(snapshot.id) {
-            while (true) {
-                now = System.currentTimeMillis()
-                delay(1000)
-            }
+    LaunchedEffect(snapshot.id) {
+        while (true) {
+            delay(1000)
+            now = System.currentTimeMillis()
         }
     }
-    val elapsedSeconds = ((now - snapshot.startedAt) / 1000).coerceAtLeast(0)
-
-    val container = when (snapshot.stage) {
-        JobRegistry.Stage.FAILED -> MaterialTheme.colorScheme.errorContainer
-        else -> MaterialTheme.colorScheme.primaryContainer
-    }
-    val accent = when (snapshot.stage) {
-        JobRegistry.Stage.FAILED -> MaterialTheme.colorScheme.error
-        else -> MaterialTheme.colorScheme.primary
-    }
-    // The queue means "running" is several states, and saying only 正在生成 while a
-    // task sits behind someone else's edit reads as a hang.
+    val elapsed = ((now - snapshot.startedAt) / 1000).coerceAtLeast(0).toInt()
     val title = when (snapshot.stage) {
-        JobRegistry.Stage.SUBMITTING -> "正在提交"
-        JobRegistry.Stage.QUEUED -> "排队中"
-        JobRegistry.Stage.RUNNING -> "正在生成"
-        JobRegistry.Stage.FETCHING -> "正在取图"
-        JobRegistry.Stage.DONE -> "完成，已保存 ${snapshot.produced} 张"
-        // A cancel the user asked for is not a failure; calling it one reads as a bug.
-        JobRegistry.Stage.FAILED ->
-            if (snapshot.message.startsWith("已取消") || snapshot.message.startsWith("已放弃")) "已取消"
-            else "这次没成功"
+        JobRegistry.Stage.QUEUED ->
+            if (snapshot.queuePosition > 0) "排队中 · 第 ${snapshot.queuePosition} 位" else "排队中"
+        JobRegistry.Stage.RUNNING ->
+            if (snapshot.percent > 0) "正在生成 · ${snapshot.percent}%" else "正在生成"
+        else -> "正在处理"
     }
-    val hint = when {
-        snapshot.stage == JobRegistry.Stage.QUEUED && snapshot.queuePosition > 1 ->
-            "前面还有 ${snapshot.queuePosition - 1} 个"
-        snapshot.stage == JobRegistry.Stage.QUEUED && snapshot.queuePosition == 1 -> "下一个就是"
-        snapshot.stage == JobRegistry.Stage.RUNNING && snapshot.percent > 0 -> "约 ${snapshot.percent}%"
-        snapshot.stage == JobRegistry.Stage.RUNNING || snapshot.stage == JobRegistry.Stage.FETCHING ->
-            "可以切走做别的，不会中断"
-        else -> ""
+    val timing = if (snapshot.etaSeconds > 0) {
+        "约剩 ${mmss(snapshot.etaSeconds)} · 已用 ${mmss(elapsed)}"
+    } else {
+        "已用 ${mmss(elapsed)}"
     }
 
-    Surface(shape = RoundedCornerShape(14.dp), color = container, modifier = Modifier.fillMaxWidth()) {
-        Row(Modifier.height(IntrinsicSize.Min)) {
-            Box(Modifier.width(4.dp).fillMaxHeight().background(accent))
-            Row(
-                Modifier.padding(start = 12.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(text = title, style = MaterialTheme.typography.titleMedium)
-                    if (active) {
-                        Text(
-                            "已等 " + elapsedLabel(elapsedSeconds),
-                            // Tabular figures: without them the number reflows every
-                            // second and the whole banner twitches.
-                            style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
-                            fontWeight = FontWeight.Normal,
-                        )
-                        if (hint.isNotEmpty()) {
-                            Text(
-                                hint,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        if (snapshot.message.isNotBlank()) {
-                            Text(
-                                snapshot.message,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    } else if (snapshot.message.isNotBlank()) {
-                        Text(
-                            snapshot.message,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                if (active) {
-                    TextButton(onClick = onGiveUp, modifier = Modifier.heightIn(min = 44.dp)) {
-                        Text("不再等", style = MaterialTheme.typography.labelMedium)
-                    }
-                } else {
-                    TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 44.dp)) {
-                        Text("知道了", style = MaterialTheme.typography.labelMedium)
-                    }
-                }
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    timing,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onBackground, modifier = Modifier.heightIn(min = 44.dp)) {
+                Text("后台继续", color = MaterialTheme.colorScheme.primary)
+            }
+            TextButton(onClick = onCancel, modifier = Modifier.heightIn(min = 44.dp)) {
+                Text("取消", color = MaterialTheme.colorScheme.error)
             }
         }
+        Spacer(Modifier.height(8.dp))
+        if (snapshot.percent > 0) {
+            LinearProgressIndicator(
+                progress = { snapshot.percent / 100f },
+                modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+            )
+        } else {
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+            )
+        }
     }
+}
+
+/** Finished job: a card with a way into the result, not a jump. */
+@Composable
+fun JobDoneBar(onView: (() -> Unit)?, onDismiss: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("已生成", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "结果已存到「以前做的」",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (onView != null) {
+            TextButton(onClick = onView, modifier = Modifier.heightIn(min = 44.dp)) {
+                Text("查看", color = MaterialTheme.colorScheme.primary)
+            }
+        }
+        TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 44.dp)) {
+            Text("关闭", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+private fun mmss(seconds: Int): String {
+    val safe = seconds.coerceAtLeast(0)
+    return "${safe / 60}:${(safe % 60).toString().padStart(2, '0')}"
 }
 
 @Composable

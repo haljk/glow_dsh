@@ -53,6 +53,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -116,6 +117,7 @@ fun GlowApp(vm: GlowViewModel) {
             snackbar = snackbar,
             onOpenSettings = { screen = RootScreen.SETTINGS },
             onOpenArchive = { screen = RootScreen.ARCHIVE },
+            onOpenItem = { name -> vm.activeItems.firstOrNull { it.name == name }?.let { vm.viewing = it } },
         )
 
         RootScreen.ARCHIVE -> {
@@ -144,6 +146,7 @@ private fun WorkbenchScreen(
     snackbar: SnackbarHostState,
     onOpenSettings: () -> Unit,
     onOpenArchive: () -> Unit,
+    onOpenItem: (String) -> Unit,
 ) {
     val job by JobRegistry.current.collectAsState()
     var showPresetSheet by remember { mutableStateOf(false) }
@@ -174,6 +177,16 @@ private fun WorkbenchScreen(
     val selectedPreset: Preset? = vm.presetId?.let { id -> vm.presets.firstOrNull { it.id == id } }
     val busy = job?.isActive == true
     val blocked = vm.submitBlockedReason()
+    // 后台继续 hides the progress surface; a new job shows it again.
+    var progressMinimized by remember(job?.id) { mutableStateOf(false) }
+    val newestItemId = vm.activeItems.firstOrNull()?.name
+    LaunchedEffect(job?.id, job?.stage) {
+        if (job?.stage == JobRegistry.Stage.FAILED) {
+            val reason = job?.message?.takeIf { it.isNotBlank() } ?: "这次没生成成功"
+            snackbar.showSnackbar(message = reason, actionLabel = "重试", duration = SnackbarDuration.Long)
+            JobRegistry.clear()
+        }
+    }
 
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
@@ -219,8 +232,6 @@ private fun WorkbenchScreen(
         bottomBar = {
             Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 8.dp) {
                 Column(Modifier.fillMaxWidth().imePadding()) {
-                    // Same hairline treatment as the top bar, so scrolled content
-                    // dissolves into the bar instead of being cut by it.
                     HorizontalDivider(
                         thickness = 1.dp,
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
@@ -233,36 +244,51 @@ private fun WorkbenchScreen(
                                 .navigationBarsPadding()
                                 .padding(horizontal = 16.dp, vertical = 10.dp),
                         ) {
-                            // A fixed slot: showing and hiding this line must not move
-                            // the button the thumb is already aiming at.
-                            Box(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 20.dp),
-                                contentAlignment = Alignment.CenterStart,
-                            ) {
-                                if (blocked != null && !busy) {
-                                    Text(
-                                        blocked,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
+                            when {
+                                // Running: the bar becomes the progress surface.
+                                busy && !progressMinimized -> JobProgressBar(
+                                    job!!,
+                                    onBackground = { progressMinimized = true },
+                                    onCancel = {
+                                        JobRegistry.requestCancel()
+                                        vm.post("如果还在排队，会取消；已经开跑就等它做完")
+                                    },
+                                )
+                                job != null && job!!.stage == JobRegistry.Stage.DONE ->
+                                    JobDoneBar(
+                                        onView = newestItemId?.let { name -> { onOpenItem(name) } },
+                                        onDismiss = { JobRegistry.clear() },
+                                    )
+                                else -> {
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = 20.dp),
+                                        contentAlignment = Alignment.CenterStart,
+                                    ) {
+                                        if (blocked != null) {
+                                            Text(
+                                                blocked,
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                    PrimaryAction(
+                                        label = when {
+                                            vm.scenario == Scenario.TEXT -> "生成图片"
+                                            vm.scenario == Scenario.RETOUCH -> "开始精修"
+                                            else -> "开始合成"
+                                        },
+                                        enabled = blocked == null,
+                                        busy = false,
+                                        onClick = { vm.submit() },
                                     )
                                 }
                             }
-                            Spacer(Modifier.height(6.dp))
-                            PrimaryAction(
-                                label = when {
-                                    busy -> "正在生成"
-                                    vm.scenario == Scenario.TEXT -> "生成图片"
-                                    vm.scenario == Scenario.RETOUCH -> "开始精修"
-                                    else -> "开始合成"
-                                },
-                                enabled = blocked == null || busy,
-                                busy = busy,
-                                onClick = { if (!busy) vm.submit() },
-                            )
                         }
                     }
                 }
@@ -300,21 +326,6 @@ private fun WorkbenchScreen(
                     }
                 }
 
-                if (job != null) {
-                    item(span = { GridItemSpan(maxLineSpan) }) {
-                        JobBanner(
-                            job!!,
-                            onDismiss = { JobRegistry.clear() },
-                            onGiveUp = {
-                                // Ask the service to give the queue's slot back; if the
-                                // model already started, cancelling is refused and the
-                                // banner keeps running.
-                                JobRegistry.requestCancel()
-                                vm.post("如果还在排队，会取消；已经开跑就等它做完")
-                            },
-                        )
-                    }
-                }
 
                 if (vm.scenario != Scenario.TEXT) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
