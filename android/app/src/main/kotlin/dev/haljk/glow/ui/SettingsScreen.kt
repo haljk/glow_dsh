@@ -79,6 +79,7 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
     var imageTimeout by remember(current) { mutableStateOf(current.imageTimeoutSeconds.toString()) }
     var llmTimeout by remember(current) { mutableStateOf(current.llmTimeoutSeconds.toString()) }
     var keepRefs by remember(current) { mutableStateOf(current.keepReferenceCopies) }
+    var host by remember(current) { mutableStateOf(hostFrom(current.imageBaseUrl)) }
     var advancedOpen by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
     var showPairing by remember { mutableStateOf(false) }
@@ -173,40 +174,25 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
         }
 
                 GlowCard {
+                    // One address to type. Ports belong to the service, not to your network,
+                    // so they moved into 高级; the field writes through to the second service
+                    // because both run on the same machine.
+                    Field(
+                        "电脑地址",
+                        host,
+                        { value ->
+                            host = value
+                            imageUrl = replaceHost(imageUrl, value)
+                            llmUrl = replaceHost(llmUrl, value)
+                        },
+                        hostFrom(Settings.DEFAULT_IMAGE_URL),
+                    )
                     Text(
-                        "队列模式：提交任务后由服务排队，手机只负责轮询取图。同步模式退回旧接口，一次请求要等到出图。",
+                        "端口会自动带上；出图与写作助手都在这一台机器上，填一个地址就够。",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
                     )
-                    Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ChoiceChip(
-                            label = "队列",
-                            secondLine = "推荐",
-                            selected = mode == Settings.MODE_QUEUE,
-                            modifier = Modifier.weight(1f),
-                            onClick = { mode = Settings.MODE_QUEUE },
-                        )
-                        ChoiceChip(
-                            label = "同步",
-                            secondLine = "旧接口",
-                            selected = mode == Settings.MODE_SYNC,
-                            modifier = Modifier.weight(1f),
-                            onClick = { mode = Settings.MODE_SYNC },
-                        )
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    Field(
-                        if (mode == Settings.MODE_QUEUE) "队列地址" else "同步服务地址",
-                        if (mode == Settings.MODE_QUEUE) imageUrl else syncUrl,
-                        { if (mode == Settings.MODE_QUEUE) imageUrl = it else syncUrl = it },
-                        if (mode == Settings.MODE_QUEUE) Settings.DEFAULT_IMAGE_URL else Settings.DEFAULT_SYNC_URL,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Field("提示词服务地址", llmUrl, { llmUrl = it }, Settings.DEFAULT_LLM_URL)
-                    // The hint sits under the toggle, not at the far end of the same
-                    // row: right-aligned and grey, it read as a second column of the
-                    // layout rather than a description of the row above it.
                     Column(
                         Modifier
                             .fillMaxWidth()
@@ -222,7 +208,7 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
                         )
                         if (!advancedOpen) {
                             Text(
-                                "里面是另一个服务地址和模型名",
+                                "队列/同步模式、两个端口、回退地址与模型名",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(bottom = 10.dp),
@@ -230,14 +216,52 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
                         }
                     }
                     if (advancedOpen) {
-                        // Both addresses are kept so switching modes never loses the
-                        // other one; the rollback target is one field, not a retype.
+                        Text(
+                            "接口模式",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            "队列模式：提交任务后由服务排队，手机只负责轮询取图。同步模式退回旧接口，一次请求要等到出图。",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ChoiceChip(
+                                label = "队列",
+                                secondLine = "推荐",
+                                selected = mode == Settings.MODE_QUEUE,
+                                modifier = Modifier.weight(1f),
+                                onClick = { mode = Settings.MODE_QUEUE },
+                            )
+                            ChoiceChip(
+                                label = "同步",
+                                secondLine = "旧接口",
+                                selected = mode == Settings.MODE_SYNC,
+                                modifier = Modifier.weight(1f),
+                                onClick = { mode = Settings.MODE_SYNC },
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        // Both addresses are kept so switching modes never loses the other
+                        // one; the rollback target is one field, not a retype.
+                        Field(
+                            if (mode == Settings.MODE_QUEUE) "队列地址" else "同步服务地址",
+                            if (mode == Settings.MODE_QUEUE) imageUrl else syncUrl,
+                            { if (mode == Settings.MODE_QUEUE) imageUrl = it else syncUrl = it },
+                            if (mode == Settings.MODE_QUEUE) Settings.DEFAULT_IMAGE_URL else Settings.DEFAULT_SYNC_URL,
+                        )
+                        Spacer(Modifier.height(10.dp))
                         Field(
                             if (mode == Settings.MODE_QUEUE) "同步服务地址（回退用）" else "队列地址（备用）",
                             if (mode == Settings.MODE_QUEUE) syncUrl else imageUrl,
                             { if (mode == Settings.MODE_QUEUE) syncUrl = it else imageUrl = it },
                             if (mode == Settings.MODE_QUEUE) Settings.DEFAULT_SYNC_URL else Settings.DEFAULT_IMAGE_URL,
                         )
+                        Spacer(Modifier.height(10.dp))
+                        Field("提示词服务地址", llmUrl, { llmUrl = it }, Settings.DEFAULT_LLM_URL)
                         Spacer(Modifier.height(10.dp))
                         Field("模型名（一般不用改）", model, { model = it }, Settings.DEFAULT_LLM_MODEL)
                         Text(
@@ -673,4 +697,12 @@ private fun SaveFeedback(vm: GlowViewModel, saved: Boolean, probing: Boolean) {
         color = color,
         modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
     )
+}
+
+private fun hostFrom(url: String): String =
+    url.substringAfter("://").substringBefore(':').substringBefore('/')
+
+private fun replaceHost(url: String, host: String): String {
+    val port = url.substringAfter("://").substringBefore('/').substringAfter(':', "")
+    return if (port.isEmpty()) "http://$host" else "http://$host:$port"
 }

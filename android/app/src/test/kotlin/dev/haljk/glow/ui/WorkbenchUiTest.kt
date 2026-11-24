@@ -96,9 +96,14 @@ class WorkbenchUiTest {
         compose.waitForIdle()
 
         compose.onNodeWithText("模型服务").assertIsDisplayed()
-        compose.onNodeWithText("队列地址").assertIsDisplayed()
+        // The main area asks for one 电脑地址 now; the per-service addresses and the
+        // mode switch live behind 高级, so the assertion has to open it first.
+        compose.onNodeWithText("电脑地址").assertIsDisplayed()
+        compose.onNodeWithText("高级").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("队列地址").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("同步").assertExists()
-        compose.onNodeWithText("提示词服务地址").assertIsDisplayed()
+        compose.onNodeWithText("提示词服务地址").assertExists()
         compose.onNodeWithText("保存并生效").performScrollTo().assertIsDisplayed()
     }
 }
