@@ -89,7 +89,33 @@ class GlowViewModel(
     // picked photos while the job keeps running. That is a real defect seen on a
     // device: the banner still counted up while the page had reset itself.
     var scenario by savedValue(saved, KEY_SCENARIO, Scenario.TEXT)
-    var prompt by savedValue(saved, KEY_PROMPT, "")
+    // One draft per mode. A shared field meant switching to 精修 carried the 文生图
+    // sentence over, and the reverse overwrote what the user had typed for the other.
+    private var draftText by savedValue(saved, KEY_PROMPT_TEXT, "")
+    private var draftRefine by savedValue(saved, KEY_PROMPT_REFINE, "")
+    private var draftCompose by savedValue(saved, KEY_PROMPT_COMPOSE, "")
+
+    var prompt: String
+        get() = when (scenario) {
+            Scenario.TEXT -> draftText
+            Scenario.RETOUCH -> draftRefine
+            Scenario.COMBINE -> draftCompose
+        }
+        set(value) {
+            when (scenario) {
+                Scenario.TEXT -> draftText = value
+                Scenario.RETOUCH -> draftRefine = value
+                Scenario.COMBINE -> draftCompose = value
+            }
+        }
+
+    init {
+        // Builds before per-mode drafts kept one "prompt"; carry that text into the
+        // 文生图 draft so an upgrade does not silently lose what the user had typed.
+        if (draftText.isEmpty()) {
+            saved.get<String>(KEY_PROMPT_LEGACY)?.takeIf { it.isNotBlank() }?.let { draftText = it }
+        }
+    }
     var presetId by savedValue<String?>(saved, KEY_PRESET, null)
     var refs by savedRefs(saved)
         private set
@@ -195,7 +221,7 @@ class GlowViewModel(
 
     // ------------------------------------------------------------- references
 
-    fun addRefs(uris: List<String>, defaultRole: Role = Role.SUBJECT) {
+    fun addRefs(uris: List<String>, defaultRole: Role = Role.SCENE) {
         val room = maxRefs - refs.size
         if (room <= 0) {
             post("最多 ${maxRefs} 张参考图")
@@ -203,6 +229,9 @@ class GlowViewModel(
         }
         val added = uris.take(room).mapIndexed { index, uri ->
             // The first image is always the subject; extras default to context.
+            // The first photo is what you are changing; anything after it is context.
+            // Defaulting every slot to 主体 made the second photo read as a second
+            // subject, which is not what 合成 means.
             val role = if (refs.isEmpty() && index == 0) Role.SUBJECT else defaultRole
             RefSlot(uri, role)
         }
@@ -242,6 +271,18 @@ class GlowViewModel(
 
     /** What the app will actually send, for the "查看将发送的指令" sheet. */
     fun previewInstruction(): String = runCatching { buildInstruction() }.getOrElse { it.message ?: "还缺少信息" }
+
+    /**
+     * The panel shows what the user typed and what actually gets sent as two blocks.
+     *
+     * They used to be one string, which invited the suspicion that the app rewrites the
+     * description behind your back. It does not: the note goes in verbatim and the
+     * constraints are appended around it.
+     */
+    fun previewParts(): Pair<String, String> {
+        val typed = prompt.trim().ifEmpty { "（还没写）" }
+        return typed to previewInstruction()
+    }
 
     private fun buildInstruction(): String {
         val note = prompt.trim()
@@ -514,7 +555,10 @@ class GlowViewModel(
 
     companion object {
         private const val KEY_SCENARIO = "scenario"
-        private const val KEY_PROMPT = "prompt"
+        private const val KEY_PROMPT_TEXT = "promptText"
+    private const val KEY_PROMPT_REFINE = "promptRefine"
+    private const val KEY_PROMPT_COMPOSE = "promptCompose"
+    private const val KEY_PROMPT_LEGACY = "prompt"
         private const val KEY_PRESET = "presetId"
         private const val KEY_REFS = "refs"
     

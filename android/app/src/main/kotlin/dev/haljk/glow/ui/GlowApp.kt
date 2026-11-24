@@ -39,6 +39,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -570,7 +571,26 @@ private fun WorkbenchScreen(
                 TextButton(onClick = { showInstructionSheet = false }) { Text("知道了") }
             },
             title = { Text("会发送这段指令") },
-            text = { Text(vm.previewInstruction(), style = MaterialTheme.typography.bodyMedium) },
+            text = {
+                val (typed, sent) = vm.previewParts()
+                Column {
+                    Text(
+                        "你写的",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(typed, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "会发送的完整指令",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(sent, style = MaterialTheme.typography.bodyMedium)
+                }
+            },
         )
     }
 }
@@ -670,6 +690,7 @@ private fun RefStrip(
         items(refs) { slot ->
             val bitmap = rememberUriBitmap(slot.uri, targetPx = 360)
             Column(Modifier.width(92.dp)) {
+                val index = refs.indexOf(slot) + 1
                 Box(
                     Modifier
                         .fillMaxWidth()
@@ -677,7 +698,22 @@ private fun RefStrip(
                         .clip(RoundedCornerShape(12.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .clickable { onPickRole(slot.uri) },
-                ) {
+                    ) {
+                    Box(
+                        Modifier
+                            .align(Alignment.TopStart)
+                            .padding(4.dp)
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.glow.scrim.copy(alpha = 0.62f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "$index",
+                            color = MaterialTheme.glow.onScrim,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
                     if (bitmap != null) {
                         androidx.compose.foundation.Image(
                             bitmap = bitmap,
@@ -830,6 +866,7 @@ private fun RoleSheet(current: Role, onPick: (Role) -> Unit, onDismiss: () -> Un
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ArchiveScreen(vm: GlowViewModel, snackbar: SnackbarHostState, onBack: () -> Unit) {
+    var pendingDelete by remember { mutableStateOf<dev.haljk.glow.data.GalleryItem?>(null) }
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
         snackbarHost = { SnackbarHost(snackbar) },
@@ -876,7 +913,7 @@ private fun ArchiveScreen(vm: GlowViewModel, snackbar: SnackbarHostState, onBack
                                     modifier = Modifier.heightIn(min = 44.dp),
                                 ) { Text("移出") }
                                 TextButton(
-                                    onClick = { vm.delete(item) },
+                        onClick = { pendingDelete = item },
                                     modifier = Modifier.heightIn(min = 44.dp),
                                 ) { Text("删除", color = MaterialTheme.colorScheme.error) }
                             }
@@ -885,6 +922,33 @@ private fun ArchiveScreen(vm: GlowViewModel, snackbar: SnackbarHostState, onBack
                 }
             }
         }
+    }
+    val toDelete = pendingDelete
+    if (toDelete != null) {
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除这张？") },
+            text = {
+                Column {
+                    Text(toDelete.prompt.takeIf { it.isNotBlank() } ?: toDelete.name)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "图片、描述与参考图副本会一起删掉，不能恢复。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.delete(toDelete)
+                    pendingDelete = null
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+            },
+        )
     }
 }
 
