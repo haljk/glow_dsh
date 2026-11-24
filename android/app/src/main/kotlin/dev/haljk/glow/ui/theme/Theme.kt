@@ -29,46 +29,51 @@ import androidx.core.view.WindowCompat
  * workbench read as one long form.
  */
 private val LightColors = lightColorScheme(
-    primary = Color(0xFF6B4EFF),
+    // Neutral field, purple only for selection and the primary action. The previous
+    // palette tinted every surface violet, which left purple meaning nothing: it was
+    // the page, the card, the border and the button all at once.
+    primary = Color(0xFF5B4CF0),
     onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = Color(0xFFE7E1FF),
-    onPrimaryContainer = Color(0xFF1B0F52),
-    secondary = Color(0xFF5C5A6B),
-    secondaryContainer = Color(0xFFE9E5F3),
-    onSecondaryContainer = Color(0xFF201F2A),
-    // Page is tinted, cards are pure white: 1.15:1 apart.
-    background = Color(0xFFEDE9F7),
+    primaryContainer = Color(0xFFE7E3FF),
+    onPrimaryContainer = Color(0xFF21166B),
+    secondary = Color(0xFF5D5D69),
+    secondaryContainer = Color(0xFFEEEEF3),
+    onSecondaryContainer = Color(0xFF1B1B21),
+    background = Color(0xFFF6F6F9),
     onBackground = Color(0xFF1B1B21),
     surface = Color(0xFFFFFFFF),
     onSurface = Color(0xFF1B1B21),
-    surfaceVariant = Color(0xFFF2EFF9),
-    onSurfaceVariant = Color(0xFF5B5968),
-    // Input borders reach 3:1; card hairlines sit just under 1.8:1.
-    outline = Color(0xFF8B8599),
-    outlineVariant = Color(0xFFBFB8D2),
-    error = Color(0xFFB3261E),
+    surfaceVariant = Color(0xFFEEEEF3),
+    onSurfaceVariant = Color(0xFF5D5D69),
+    // Inputs sit at 3:1; card hairlines are a quiet 1.2:1 on the neutral page.
+    outline = Color(0xFF9696A2),
+    outlineVariant = Color(0xFFE6E6EC),
+    error = Color(0xFFC4311F),
     onError = Color(0xFFFFFFFF),
+    errorContainer = Color(0xFFFDE6E2),
+    onErrorContainer = Color(0xFF5E1408),
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFFB9A8FF),
-    onPrimary = Color(0xFF241B54),
-    primaryContainer = Color(0xFF3D3178),
-    onPrimaryContainer = Color(0xFFE7E1FF),
-    secondary = Color(0xFFC9C5D6),
-    secondaryContainer = Color(0xFF2E2B3A),
-    onSecondaryContainer = Color(0xFFE7E3F0),
-    // Near-black page, visibly lighter cards: 1.18:1 apart.
-    background = Color(0xFF0E0D12),
-    onBackground = Color(0xFFE6E3EC),
-    surface = Color(0xFF1E1C25),
-    onSurface = Color(0xFFE6E3EC),
-    surfaceVariant = Color(0xFF292633),
-    onSurfaceVariant = Color(0xFFB6B2C2),
-    outline = Color(0xFF6E6980),
-    outlineVariant = Color(0xFF4A4557),
-    error = Color(0xFFF2B8B5),
-    onError = Color(0xFF601410),
+    primary = Color(0xFFB8ACFF),
+    onPrimary = Color(0xFF24156A),
+    primaryContainer = Color(0xFF3E3592),
+    onPrimaryContainer = Color(0xFFEEEAFF),
+    secondary = Color(0xFFABAAB8),
+    secondaryContainer = Color(0xFF2B2B34),
+    onSecondaryContainer = Color(0xFFE8E7F0),
+    background = Color(0xFF111115),
+    onBackground = Color(0xFFE8E7F0),
+    surface = Color(0xFF1E1E25),
+    onSurface = Color(0xFFE8E7F0),
+    surfaceVariant = Color(0xFF2B2B34),
+    onSurfaceVariant = Color(0xFFABAAB8),
+    outline = Color(0xFF7C7B89),
+    outlineVariant = Color(0xFF2D2D36),
+    error = Color(0xFFFF9C8F),
+    onError = Color(0xFF4D1F1A),
+    errorContainer = Color(0xFF4D1F1A),
+    onErrorContainer = Color(0xFFFFDAD4),
 )
 
 /**
@@ -88,7 +93,7 @@ data class GlowExtras(
 )
 
 private val LightExtras = GlowExtras(
-    success = Color(0xFF2E7D32),
+    success = Color(0xFF1F8A4C),
     viewerSurface = Color(0xFF141317),
     viewerContent = Color(0xFFFFFFFF),
     viewerDanger = Color(0xFFF2B8B5),
@@ -97,7 +102,7 @@ private val LightExtras = GlowExtras(
 )
 
 private val DarkExtras = GlowExtras(
-    success = Color(0xFF7BD88F),
+    success = Color(0xFF6FD394),
     viewerSurface = Color(0xFF141317),
     viewerContent = Color(0xFFFFFFFF),
     viewerDanger = Color(0xFFF2B8B5),

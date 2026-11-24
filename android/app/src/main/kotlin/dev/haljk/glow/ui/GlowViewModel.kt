@@ -9,6 +9,8 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import org.json.JSONArray
 import org.json.JSONObject
+import dev.haljk.glow.core.AspectRatio
+import dev.haljk.glow.core.OutputTable
 import dev.haljk.glow.core.Density
 import dev.haljk.glow.core.EditInstructionRequest
 import dev.haljk.glow.core.InstructionComposer
@@ -59,9 +61,6 @@ data class RefSlot(
 }
 
 /** A named output size for text mode. */
-data class SizeChoice(val label: String, val width: Int, val height: Int) {
-    val text: String get() = "${width}x$height"
-}
 
 class GlowViewModel(
     application: Application,
@@ -94,8 +93,12 @@ class GlowViewModel(
     var presetId by savedValue<String?>(saved, KEY_PRESET, null)
     var refs by savedRefs(saved)
         private set
-    var density by savedValue(saved, KEY_DENSITY, Density.NORMAL)
-    var sizeChoiceIndex by savedValue(saved, KEY_SIZE_INDEX, 0)
+
+    // Ratio and quality replace the old seven fixed presets. "跟随原图" (autoSize) still
+    // wins for reference modes, in which case the ratio is ignored and the photo's own
+    // aspect is kept through SizeFit.
+    var ratio by savedValue(saved, KEY_RATIO, AspectRatio.SQUARE)
+    var quality by savedValue(saved, KEY_QUALITY, Density.NORMAL)
     var autoSize by savedValue(saved, KEY_AUTO_SIZE, true)
     var seedText by savedValue(saved, KEY_SEED, "")
     var batchCount by savedValue(saved, KEY_BATCH, 1)
@@ -128,15 +131,6 @@ class GlowViewModel(
 
     val presets get() = Presets.ALL
 
-    val sizeChoices = listOf(
-        SizeChoice("方形 1024", 1024, 1024),
-        SizeChoice("竖版人像 3:4", 896, 1216),
-        SizeChoice("手机壁纸 9:16", 864, 1536),
-        SizeChoice("电脑壁纸 16:9", 1536, 864),
-        SizeChoice("横版照片 4:3", 1216, 896),
-        SizeChoice("超清横版 16:9", 2048, 1152),
-        SizeChoice("小图试手 512", 512, 512),
-    )
 
     val maxRefs: Int get() = if (scenario == Scenario.RETOUCH) 2 else 5
 
@@ -270,18 +264,23 @@ class GlowViewModel(
 
     /** Output size: text mode uses a named size, edit modes inherit the photo. */
     fun resolveSize(): Pair<Int, Int> {
-        if (scenario == Scenario.TEXT) {
-            val choice = sizeChoices[sizeChoiceIndex.coerceIn(sizeChoices.indices)]
-            return choice.width to choice.height
-        }
-        if (!autoSize) {
-            val choice = sizeChoices[sizeChoiceIndex.coerceIn(sizeChoices.indices)]
-            return choice.width to choice.height
+        val followsPhoto = scenario != Scenario.TEXT && autoSize
+        if (!followsPhoto) {
+            val fixed = OutputTable.of(ratio, quality)
+            return fixed.width to fixed.height
         }
         val first = refs.firstOrNull()
         val (w, h) = if (first != null && first.hasSize) first.width to first.height else 1024 to 1024
-        val fitted = SizeFit.fit(w, h, density.budget) ?: return 1024 to 1024
+        val fitted = SizeFit.fit(w, h, quality.budget) ?: return 1024 to 1024
         return fitted.width to fitted.height
+    }
+
+    /** "1:1 · 推荐 · 1 张" — the one-line summary the output row shows. */
+    fun outputSummary(): String {
+        val followsPhoto = scenario != Scenario.TEXT && autoSize
+        val ratioText = if (followsPhoto) "跟随原图" else ratio.id
+        val count = if (scenario == Scenario.TEXT) batchCount.coerceIn(1, 2) else 1
+        return "$ratioText · ${quality.label.take(2)} · $count 张"
     }
 
     fun resolvedSizeLabel(): String {
@@ -518,8 +517,9 @@ class GlowViewModel(
         private const val KEY_PROMPT = "prompt"
         private const val KEY_PRESET = "presetId"
         private const val KEY_REFS = "refs"
-        private const val KEY_DENSITY = "density"
-        private const val KEY_SIZE_INDEX = "sizeChoiceIndex"
+    
+        private const val KEY_RATIO = "outputRatio"
+    private const val KEY_QUALITY = "outputQuality"
         private const val KEY_AUTO_SIZE = "autoSize"
         private const val KEY_SEED = "seedText"
         private const val KEY_BATCH = "batchCount"

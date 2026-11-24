@@ -47,6 +47,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import android.app.Activity
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -111,6 +116,22 @@ private val COMPARE_MODES = listOf(CompareMode.SWITCH, CompareMode.SIDE, Compare
 fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // The viewer is a dark surface in both themes, so the system bar icons must be light
+    // here regardless of the app theme — otherwise light mode draws dark icons on the
+    // black chrome and the status bar disappears.
+    val view = LocalView.current
+    val darkTheme = isSystemInDarkTheme()
+    DisposableEffect(Unit) {
+        val activity = view.context as? Activity
+        val controller = activity?.window?.let { WindowCompat.getInsetsController(it, view) }
+        controller?.isAppearanceLightStatusBars = false
+        controller?.isAppearanceLightNavigationBars = false
+        onDispose {
+            controller?.isAppearanceLightStatusBars = !darkTheme
+            controller?.isAppearanceLightNavigationBars = !darkTheme
+        }
+    }
+
     val resultFile = vm.fileOf(item)
     val refFile = vm.refFileOf(item, 0)
     val chrome = MaterialTheme.glow.viewerSurface

@@ -1,6 +1,7 @@
 package dev.haljk.glow.ui
 
 import androidx.lifecycle.SavedStateHandle
+import dev.haljk.glow.core.AspectRatio
 import dev.haljk.glow.core.Density
 import dev.haljk.glow.core.Role
 import dev.haljk.glow.data.JobRegistry
@@ -35,8 +36,8 @@ class StateRestorationTest {
         first.scenario = Scenario.RETOUCH
         first.prompt = "把背景换成浅灰 studio"
         first.presetId = "bg-replace"
-        first.density = Density.SHARP
-        first.sizeChoiceIndex = 3
+        first.quality = Density.SHARP
+        first.ratio = AspectRatio.WIDE
         first.autoSize = false
         first.seedText = "12345"
         first.batchCount = 2
@@ -49,8 +50,8 @@ class StateRestorationTest {
         assertEquals(Scenario.RETOUCH, second.scenario)
         assertEquals("把背景换成浅灰 studio", second.prompt)
         assertEquals("bg-replace", second.presetId)
-        assertEquals(Density.SHARP, second.density)
-        assertEquals(3, second.sizeChoiceIndex)
+        assertEquals(Density.SHARP, second.quality)
+        assertEquals(AspectRatio.WIDE, second.ratio)
         assertEquals(false, second.autoSize)
         assertEquals("12345", second.seedText)
         assertEquals(2, second.batchCount)
@@ -65,7 +66,7 @@ class StateRestorationTest {
         assertEquals(Scenario.TEXT, vm.scenario)
         assertEquals("", vm.prompt)
         assertEquals(null, vm.presetId)
-        assertEquals(Density.NORMAL, vm.density)
+        assertEquals(Density.NORMAL, vm.quality)
         assertTrue(vm.autoSize)
         assertEquals(1, vm.batchCount)
         assertTrue(vm.refs.isEmpty())

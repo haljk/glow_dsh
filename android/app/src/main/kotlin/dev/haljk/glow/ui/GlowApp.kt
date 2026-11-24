@@ -42,7 +42,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.HorizontalDivider
@@ -75,6 +77,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import dev.haljk.glow.core.AspectRatio
 import dev.haljk.glow.core.Density
 import dev.haljk.glow.core.Preset
 import dev.haljk.glow.core.Preserve
@@ -146,6 +150,7 @@ private fun WorkbenchScreen(
     var showRoleSheetFor by remember { mutableStateOf<String?>(null) }
     var showInstructionSheet by remember { mutableStateOf(false) }
     var showAdvanced by remember { mutableStateOf(false) }
+    var showOutputSheet by remember { mutableStateOf(false) }
 
     val pickImages = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(5),
@@ -180,8 +185,22 @@ private fun WorkbenchScreen(
                         modifier = Modifier.widthIn(max = ContentMaxWidth),
                         title = { Text("阁楼", style = MaterialTheme.typography.headlineSmall) },
                         actions = {
-                            TextButton(onClick = onOpenSettings, modifier = Modifier.heightIn(min = 48.dp)) {
-                                Text("设置")
+                            // The connection state used to sit on its own row under the bar, spending a
+                            // full line on two words. It is a status, not content: it belongs next to the
+                            // title, and tapping it is the shortcut into settings that the failing case
+                            // needs anyway.
+                            ConnectionPill(
+                                imageOk = vm.imageProbe?.ok,
+                                llmOk = vm.llmProbe?.ok,
+                                probing = vm.probing,
+                                onClick = onOpenSettings,
+                            )
+                            IconButton(onClick = onOpenSettings, modifier = Modifier.size(48.dp)) {
+                                Icon(
+                                    Icons.Filled.Settings,
+                                    contentDescription = "设置",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                         },
                         colors = TopAppBarDefaults.topAppBarColors(
@@ -271,7 +290,6 @@ private fun WorkbenchScreen(
             ) {
                 if (!compact) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
-                        StatusStrip(vm)
                     }
                 }
 
@@ -435,48 +453,29 @@ private fun WorkbenchScreen(
                 }
 
                 item(span = { GridItemSpan(maxLineSpan) }) {
-                    GlowCard {
-                        SectionHeader(
-                            // The 张数 control lives in this card, so the title has
-                            // to cover it; "画面尺寸" alone made the extra row look stray.
-                            title = if (vm.scenario == Scenario.TEXT) "尺寸与张数" else "输出清晰度",
-                            hint = vm.resolvedSizeLabel(),
-                        )
-                        if (vm.scenario == Scenario.TEXT) {
-                            SizeFlow(vm)
-                            Spacer(Modifier.height(10.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("张数", style = MaterialTheme.typography.labelMedium)
-                                Spacer(Modifier.width(10.dp))
-                                listOf(1, 2).forEach { value ->
-                                    ChoiceChip(
-                                        label = "$value 张",
-                                        selected = vm.batchCount == value,
-                                        modifier = Modifier.padding(end = 8.dp),
-                                        onClick = { vm.batchCount = value },
-                                    )
-                                }
-                            }
-                        } else {
-                            DensityChips(vm.density) { vm.density = it }
-                            Spacer(Modifier.height(8.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                ChoiceChip(
-                                    label = "跟随原图比例",
-                                    selected = vm.autoSize,
-                                    onClick = { vm.autoSize = true },
+                    GlowCard(onClick = { showOutputSheet = true }) {
+                        // One row instead of a seven-chip grid: the chip labels ("超清横版"
+                        // vs "电脑壁纸") were both 16:9 and neither said how big the result
+                        // would be. Ratio and quality are two questions; ask them in a sheet.
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "输出",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
-                                Spacer(Modifier.width(8.dp))
-                                ChoiceChip(
-                                    label = "自己指定",
-                                    selected = !vm.autoSize,
-                                    onClick = { vm.autoSize = false },
-                                )
+                                Text(vm.outputSummary(), style = MaterialTheme.typography.titleMedium)
                             }
-                            if (!vm.autoSize) {
-                                Spacer(Modifier.height(8.dp))
-                                SizeFlow(vm)
-                            }
+                            Text(
+                                vm.resolvedSizeLabel(),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.outline,
+                            )
                         }
                     }
                 }
@@ -547,6 +546,12 @@ private fun WorkbenchScreen(
         )
     }
 
+    if (showOutputSheet) {
+        ModalBottomSheet(onDismissRequest = { showOutputSheet = false }) {
+            OutputSheet(vm) { showOutputSheet = false }
+        }
+    }
+
     if (showInstructionSheet) {
         AlertDialog(
             onDismissRequest = { showInstructionSheet = false },
@@ -559,32 +564,6 @@ private fun WorkbenchScreen(
     }
 }
 
-/** One line, and only when it has something to say: two green "connected" chips
- *  in the top bar spent the most valuable strip of the screen on good news. */
-@Composable
-private fun StatusStrip(vm: GlowViewModel) {
-    val imageOk = vm.imageProbe?.ok
-    val llmOk = vm.llmProbe?.ok
-    val trouble = vm.imageProbe?.ok == false || vm.llmProbe?.ok == false
-    Row(
-        Modifier.fillMaxWidth().padding(bottom = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        when {
-            vm.probing && vm.imageProbe == null -> StatusDot(null, "正在检查服务…")
-            trouble -> {
-                StatusDot(false, if (imageOk == false) "出图服务未连接" else "写作助手未连接")
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "点右上角设置检查地址",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-            else -> StatusDot(true, "服务已连接")
-        }
-    }
-}
 
 /**
  * Size options as fixed three-column rows.
@@ -595,26 +574,76 @@ private fun StatusStrip(vm: GlowViewModel) {
  * aligned.
  */
 @Composable
-private fun SizeFlow(vm: GlowViewModel) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        // Four per row: seven options in three columns left the last row two thirds
-        // empty, which read as a failed grid rather than a list.
-        vm.sizeChoices.chunked(4).forEach { row ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                row.forEachIndexed { offset, choice ->
-                    val index = vm.sizeChoices.indexOf(choice)
-                    val parts = choice.label.split(' ')
-                    ChoiceChip(
-                        label = parts.first(),
-                        secondLine = parts.drop(1).joinToString(" ").ifBlank { null },
-                        selected = index == vm.sizeChoiceIndex,
-                        modifier = Modifier.weight(1f),
-                        onClick = { vm.sizeChoiceIndex = index },
-                    )
-                }
-                repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
+private fun OutputSheet(vm: GlowViewModel, onDismiss: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+        Text("输出设置", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "最终会是 ${vm.resolvedSizeLabel()}",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(14.dp))
+        Text("比例", style = MaterialTheme.typography.labelLarge)
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (vm.scenario != Scenario.TEXT) {
+                ChoiceChip(
+                    label = "跟随原图",
+                    selected = vm.autoSize,
+                    modifier = Modifier.weight(1f),
+                    onClick = { vm.autoSize = true },
+                )
+            }
+            AspectRatio.entries.take(if (vm.scenario == Scenario.TEXT) 3 else 2).forEach { entry ->
+                ChoiceChip(
+                    label = entry.id,
+                    secondLine = entry.label,
+                    selected = !vm.autoSize && vm.ratio == entry,
+                    modifier = Modifier.weight(1f),
+                    onClick = { vm.autoSize = false; vm.ratio = entry },
+                )
             }
         }
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            val rest = if (vm.scenario == Scenario.TEXT) AspectRatio.entries.drop(3) else AspectRatio.entries.drop(2)
+            rest.forEach { entry ->
+                ChoiceChip(
+                    label = entry.id,
+                    secondLine = entry.label,
+                    selected = !vm.autoSize && vm.ratio == entry,
+                    modifier = Modifier.weight(1f),
+                    onClick = { vm.autoSize = false; vm.ratio = entry },
+                )
+            }
+            repeat(3 - rest.size) { Spacer(Modifier.weight(1f)) }
+        }
+        Spacer(Modifier.height(16.dp))
+        Text("清晰度", style = MaterialTheme.typography.labelLarge)
+        Spacer(Modifier.height(6.dp))
+        DensityChips(vm.quality) { vm.quality = it }
+        if (vm.scenario == Scenario.TEXT) {
+            Spacer(Modifier.height(16.dp))
+            Text("张数", style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(1, 2).forEach { value ->
+                    ChoiceChip(
+                        label = "$value 张",
+                        selected = vm.batchCount == value,
+                        onClick = { vm.batchCount = value },
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(18.dp))
+        Button(
+            onClick = onDismiss,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
+            shape = RoundedCornerShape(14.dp),
+        ) { Text("完成", style = MaterialTheme.typography.titleLarge) }
+        Spacer(Modifier.height(12.dp))
     }
 }
 

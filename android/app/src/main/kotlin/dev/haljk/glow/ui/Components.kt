@@ -1,6 +1,9 @@
 package dev.haljk.glow.ui
 
 import androidx.compose.foundation.Image
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -28,6 +31,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -71,14 +75,23 @@ fun GlowCard(
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val shape = RoundedCornerShape(16.dp)
+    val shape = RoundedCornerShape(20.dp)
+    // Light mode separates the card from the page with a soft shadow and no outline;
+    // on a neutral field an outline reads as a box drawn around the content. Dark mode
+    // keeps a hairline because a shadow on near-black is invisible.
+    val dark = isSystemInDarkTheme()
     Surface(
         modifier = modifier
             .fillMaxWidth()
             .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
         shape = shape,
         color = MaterialTheme.colorScheme.surface,
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        border = if (dark) {
+            androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        } else {
+            null
+        },
+        shadowElevation = if (dark) 0.dp else 2.dp,
     ) {
         Column(Modifier.padding(14.dp), content = content)
     }
@@ -141,7 +154,10 @@ fun ScenarioRow(current: Scenario, compact: Boolean = false, onPick: (Scenario) 
     ) {
         Scenario.entries.forEach { entry ->
             val selected = entry == current
-            val shape = RoundedCornerShape(14.dp)
+            val shape = RoundedCornerShape(16.dp)
+            // Selection is fill plus a tick, never a border: a 2dp primary outline on a
+            // card collided with the focused-input outline, so "selected" and "focused"
+            // looked like the same state.
             Column(
                 modifier = Modifier
                     .weight(1f)
@@ -152,24 +168,29 @@ fun ScenarioRow(current: Scenario, compact: Boolean = false, onPick: (Scenario) 
                         if (selected) MaterialTheme.colorScheme.primaryContainer
                         else MaterialTheme.colorScheme.surface,
                     )
-                    .border(
-                        width = if (selected) 2.dp else 1.dp,
-                        color = if (selected) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.outlineVariant,
-                        shape = shape,
-                    )
                     .clickable { onPick(entry) }
                     .padding(horizontal = 10.dp, vertical = 11.dp),
                 verticalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterVertically),
             ) {
-                Text(
-                    entry.title,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
-                    else MaterialTheme.colorScheme.onSurface,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        entry.title,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                        else MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (selected) {
+                        Icon(
+                            Icons.Filled.Check,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(15.dp),
+                        )
+                    }
+                }
                 Text(
                     entry.blurb,
                     style = MaterialTheme.typography.labelMedium,
@@ -225,19 +246,6 @@ fun PrimaryAction(
     }
 }
 
-@Composable
-fun StatusDot(ok: Boolean?, label: String) {
-    val color = when (ok) {
-        true -> MaterialTheme.glow.success
-        false -> MaterialTheme.colorScheme.error
-        null -> MaterialTheme.colorScheme.outline
-    }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(7.dp).clip(CircleShape).background(color))
-        Spacer(Modifier.width(6.dp))
-        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
 
 /**
  * Job banner.
@@ -426,11 +434,6 @@ fun ChoiceChip(
                 if (selected) MaterialTheme.colorScheme.primaryContainer
                 else MaterialTheme.colorScheme.surfaceVariant,
             )
-            .border(
-                1.dp,
-                if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                shape,
-            )
             .clickable { onClick() }
             .padding(horizontal = 8.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center,
@@ -503,5 +506,49 @@ fun relativeTime(timestamp: Long): String {
         today -> "今天 $clock"
         today.minusDays(1) -> "昨天 $clock"
         else -> "${moment.monthValue} 月 ${moment.dayOfMonth} 日"
+    }
+}
+
+/**
+ * Connection state in the app bar.
+ *
+ * It replaced a full row of text under the bar: the state is a status, not content, and
+ * the failing case (a wrong address) is exactly when the user needs a route into
+ * settings — so the pill itself is the shortcut.
+ */
+@Composable
+fun ConnectionPill(
+    imageOk: Boolean?,
+    llmOk: Boolean?,
+    probing: Boolean,
+    onClick: () -> Unit,
+) {
+    val trouble = imageOk == false || llmOk == false
+    val waiting = probing || (imageOk == null && llmOk == null)
+    val dotColor = when {
+        trouble -> MaterialTheme.colorScheme.error
+        waiting -> MaterialTheme.colorScheme.outline
+        else -> MaterialTheme.glow.success
+    }
+    val label = when {
+        trouble -> "未连接"
+        waiting -> "检查中"
+        else -> "已连接"
+    }
+    val container = if (trouble) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant
+    val content = if (trouble) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurfaceVariant
+
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(container)
+            .clickable(onClick = onClick)
+            .heightIn(min = 32.dp)
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(8.dp).clip(CircleShape).background(dotColor))
+        Spacer(Modifier.width(6.dp))
+        Text(label, style = MaterialTheme.typography.labelMedium, color = content, maxLines = 1)
     }
 }
