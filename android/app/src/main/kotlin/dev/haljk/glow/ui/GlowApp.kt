@@ -228,6 +228,14 @@ private fun WorkbenchScreen(
                             if (job?.isActive == true) {
                                 JobChip(job!!, onOpenJobs)
                             }
+                            else {
+                                // 任务 used to be reachable only from the running chip, so the
+                                // history vanished the moment nothing was in flight.
+                                TextButton(
+                                    onClick = onOpenJobs,
+                                    modifier = Modifier.heightIn(min = 40.dp),
+                                ) { Text("任务") }
+                            }
                             ConnectionPill(
                                 imageOk = vm.imageProbe?.ok,
                                 llmOk = vm.llmProbe?.ok,
@@ -1180,23 +1188,6 @@ private fun JobQueueScreen(
     // Read from disk, not from the in-memory history: the record outlives the
     // process, and it is the only thing that knows where the originals are.
     val stored = remember(job?.stage, job?.percent, job?.id) { vm.taskStore.list() }
-    val recent = stored.map { record ->
-        JobRegistry.Snapshot(
-            id = record.id,
-            summary = record.summary.ifBlank { record.note },
-            stage = when (record.status) {
-                dev.haljk.glow.data.TaskRecord.STATUS_DONE -> JobRegistry.Stage.DONE
-                dev.haljk.glow.data.TaskRecord.STATUS_FAILED -> JobRegistry.Stage.FAILED
-                else -> JobRegistry.Stage.QUEUED
-            },
-            startedAt = record.createdAt,
-            expected = record.count,
-            produced = record.resultNames.size,
-            message = if (record.referenceFiles.isEmpty()) record.message else record.message,
-            percent = record.percent,
-        )
-    }
-    val newest = vm.activeItems.firstOrNull()?.name
 
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
@@ -1278,48 +1269,58 @@ private fun JobQueueScreen(
                 Spacer(Modifier.height(16.dp))
             }
 
-            if (recent.isNotEmpty()) {
+            if (stored.isNotEmpty()) {
                 Text("最近的任务", style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.height(8.dp))
-                recent.forEach { snapshot ->
+                stored.forEach { record ->
+                    val done = record.status == dev.haljk.glow.data.TaskRecord.STATUS_DONE
+                    val failed = record.status == dev.haljk.glow.data.TaskRecord.STATUS_FAILED
                     GlowCard {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(
-                                    when (snapshot.stage) {
-                                        JobRegistry.Stage.DONE -> "已完成"
-                                        JobRegistry.Stage.FAILED -> "没成功"
+                                    when {
+                                        done -> "已完成"
+                                        failed -> "没成功"
                                         else -> "进行中"
                                     },
                                     style = MaterialTheme.typography.titleSmall,
-                                    color = if (snapshot.stage == JobRegistry.Stage.FAILED) {
-                                        MaterialTheme.colorScheme.error
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurface
-                                    },
+                                    color = if (failed) MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.onSurface,
                                 )
                                 Text(
-                                    snapshot.summary.ifBlank { "—" },
+                                    record.summary.ifBlank { record.note.ifBlank { "—" } },
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 2,
                                 )
-                                if (snapshot.stage == JobRegistry.Stage.FAILED && snapshot.message.isNotBlank()) {
+                                if (failed && record.message.isNotBlank()) {
                                     Text(
-                                        snapshot.message,
+                                        record.message,
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.error,
                                     )
                                 }
+                                if (record.referenceFiles.isNotEmpty()) {
+                                    Text(
+                                        "原图 ${record.referenceFiles.size} 张已随任务保存",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
-                            if (snapshot.stage == JobRegistry.Stage.DONE && newest != null) {
-                                TextButton(onClick = { onOpenItem(newest) }) { Text("查看") }
+                            // Open this record's own result. The old code opened whatever
+                            // was newest in the gallery, which is a different picture as
+                            // soon as two tasks finish.
+                            val result = record.resultNames.firstOrNull()
+                            if (done && result != null) {
+                                TextButton(onClick = { onOpenItem(result) }) { Text("查看") }
                             }
                         }
                     }
                     Spacer(Modifier.height(8.dp))
                 }
-                TextButton(onClick = { JobRegistry.forgetAll() }) { Text("清空记录") }
+                TextButton(onClick = { JobRegistry.forgetAll(); vm.taskStore.clear() }) { Text("清空记录") }
             }
         }
     }
