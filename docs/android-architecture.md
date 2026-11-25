@@ -54,12 +54,20 @@ DSH 版踩过的坑在这里会重演，而且第一次就会踩死：
 OkHttpClient.Builder()
     .connectTimeout(15, TimeUnit.SECONDS)
     .writeTimeout(10, TimeUnit.MINUTES)   // 上传 2 张大图
-    .readTimeout(15, TimeUnit.MINUTES)    // 等出图
+    .readTimeout(settings.imageTimeoutSeconds.toLong(), TimeUnit.SECONDS)`n
     .callTimeout(0, TimeUnit.MILLISECONDS) // 不设整体上限，由业务层控制
     .build()
 ```
 
-图片下载（结果与参考图副本）用**另一个客户端**，读超时 60 秒即可——不要把长超时套到 `Coil` 的加载上。
+**但读超时只是单次请求的上限，不是任务的寿命。** 排队模式下客户端轮询到服务端给出
+成功、失败或取消为止，中间不设任何 wall-clock 截止时间（2026-11-25 起）：
+曾经按「出图最长」到点放弃，结果是模型还在跑、用户看到失败、过一会儿图又出现。
+这项设置现在只约束同步模式的单次请求。
+
+唯一例外是「服务端连续无应答」：连续 45 次（约 3 分钟）读不到任务进度即停止轮询并如实报错，
+因为那属于服务异常，而不是任务慢。
+
+图片下载（结果与参考图副本）用**另一个客户端**，读超时 60 秒即可——不要把长超时套到图片加载上。
 
 ### 2.3 明文 HTTP 会被系统拦掉
 
@@ -114,6 +122,28 @@ OkHttpClient.Builder()
 进度是服务端按历史耗时估算的，封顶 95，界面上写「约」，不承诺精确百分比。
 
 
+
+## 2.7 任务状态必须落盘，不能只活在内存里
+
+内存里的 `StateFlow` 随进程一起消失，这带来两个真出现过的故障：
+
+1. **收起进度条后任务从应用里消失**：只有系统通知还记得它在跑，应用内没有任何入口能看到历史。
+2. **改图结果没有原图可对比**：原图副本原本在任务结束时才写，而照片选择器的授权可能在那之前过期；
+   一旦过期，结果存下来时就没有副本，查看器只剩一张图，用户看到的现象是「对比功能坏了」。
+
+因此任务有了独立记录（`data/TaskStore.kt`）：
+
+- **一条任务一个 JSON**：`files/tasks/<id>.json`，字段含状态、百分比、eta、提示词、尺寸、
+  产出的作品名与参考图文件名。一个文件损坏只损失一条记录，目录列表就是索引。
+- **写穿**：状态在 `JobRegistry` 变化时同步落盘（提交、排队、运行、完成、失败），
+  不依赖界面是否在观察。
+- **原图在提交时复制**进 `files/tasks/<id>/ref-N.png`，抢在授权失效之前；
+  查看器优先用作品自带的副本，没有就回任务里取。
+- **恢复任务带 URI**：待处理任务里持久化参考图 URI，进程被杀后恢复的改图任务仍能存下原图。
+
+代价与已知限制：记录不会自动清理（任务页有「清空记录」，只删记录与任务目录，不动作品）；
+原图副本会占用磁盘，随任务数增长。
+
 ## 3. 技术选型
 
 | 关注点 | 选择 | 理由 |
@@ -143,21 +173,26 @@ app/src/main/java/dev/haljk/glow/
 │  ├─ Role.kt                6 种参考图用途 + 指令句式
 │  ├─ PreserveClause.kt      冻结清单生成（总表 − mayChange）
 │  ├─ Compose.kt             指令合成：预设 + 角色 + 补充 + 冻结
-│  ├─ SizeFit.kt             比例继承与像素预算拟合
+│  ├─ SizeFit.kt             跟随原图：比例继承与像素预算拟合
+│  ├─ OutputTable.kt         比例 × 清晰度 → 像素（五比例 × 三档，含 2048）
+│  ├─ PairingConfig.kt       扫码配对的版本化配置串（编解码 + 校验）
 │  ├─ Density.kt             快速/推荐/高清 → 像素预算
 │  └─ Job.kt                 任务状态机（queued/running/done/failed）
 ├─ data/
-│  ├─ ModelClient.kt         出图服务、提示词服务（OkHttp，双客户端）
+│  ├─ ModelClient.kt         出图服务、提示词服务（OkHttp，多客户端）
+│  ├─ JobRegistry.kt         内存态任务快照，逐次**写穿**到 TaskStore
+│  ├─ TaskStore.kt           **任务落盘**：一条任务一个 JSON + 原图副本目录
 │  ├─ GalleryStore.kt        sidecar JSON 读写、目录扫描、归档标记
 │  ├─ FavoriteStore.kt       常用提示词（上限 5）
-│  └─ SettingsStore.kt       服务地址、超时、输出目录
+│  └─ SettingsStore.kt       电脑地址、端口、超时、队列/同步模式
 ├─ service/
-│  └─ GenerationService.kt   前台服务，执行任务并推进通知
+│  └─ GenerationService.kt   前台服务：提交 → 轮询 → 取图，推进通知与任务记录
 └─ ui/
-   ├─ WorkbenchScreen.kt     三场景主界面
-   ├─ ViewerScreen.kt        全屏查看 + 并排/滑动对比
-   ├─ ArchiveScreen.kt       归档箱
-   ├─ SettingsScreen.kt      模型服务、常用提示词
+   ├─ GlowApp.kt             工作台 / 全部作品 / 任务 / 设置 四个页面与导航
+   ├─ ViewerScreen.kt        切换 · 并排 · 滑动三种对比，均支持双指缩放
+   ├─ SettingsScreen.kt      一个电脑地址 + 高级折叠；扫码配对入口
+   ├─ ScanQr.kt              相机预览 + 二维码解码（仅扫码时申请权限）
+   ├─ PairingQr.kt           配置二维码生成、存相册
    └─ theme/
 ```
 
@@ -192,7 +227,9 @@ app/src/main/java/dev/haljk/glow/
 | 关掉应用 | 任务中断，已出图保留 | 同 |
 | 目录结构 | `~/Pictures/glow/` | App 私有 `files/gallery/`，导出走 MediaStore |
 | 设置位置 | `~/.glow/settings.json` | App 私有 `files/settings.json` |
-| 归档 | sidecar `archived` 字段 | **完全一致** |
+| 归档 | sidecar `archived` 字段 | **完全一致**（Android 侧入口在「全部作品」的筛选里） |
+| 任务记录 | 无独立记录，进度在宿主内存 | **落盘** `files/tasks/<id>.json` + 原图副本，可跨进程重启 |
+| 扫码配对 | 无 | 手机生成配置二维码存相册 / 扫码导入并先看差异 |
 | 常用提示词 | 输出目录 `favorites.json`，上限 5 | **完全一致** |
 | 结果列表 | 目录扫描 | **完全一致** |
 | 认证 | 无（仅本机访问） | 无（模型服务本身无认证） |
