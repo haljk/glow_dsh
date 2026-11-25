@@ -138,7 +138,7 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
     val onChrome = MaterialTheme.glow.viewerContent
     val danger = MaterialTheme.glow.viewerDanger
 
-    var mode by remember { mutableStateOf(if (refFile != null) CompareMode.SWITCH else CompareMode.SWITCH) }
+    var mode by remember { mutableStateOf(if (vm.openInSideBySide && refFile != null) CompareMode.SIDE else CompareMode.SWITCH) }
     var fraction by remember { mutableFloatStateOf(0.5f) }
     var showReference by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -319,6 +319,21 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
         // ------------------------------------------------------------- bottom bar
         if (refFile != null) {
             ModeSegments(current = mode, chrome = chrome, onChrome = onChrome) { mode = it }
+        } else {
+            // A missing comparison used to be silent: the controls simply were not there,
+            // which reads as "the feature disappeared". Say which of the three cases it is.
+            Text(
+                when {
+                    item.isEdit && item.refFiles.isNotEmpty() -> "原图副本已经不在了，所以没法对比"
+                    item.isEdit -> "这次没有保留原图副本，设置里打开「保留参考图副本」后新任务就能对比"
+                    else -> "这是文生图结果，没有原图可对比"
+                },
+                color = onChrome.copy(alpha = 0.7f),
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            )
         }
         HorizontalDivider(
             thickness = 1.dp,

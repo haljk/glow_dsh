@@ -366,6 +366,9 @@ class GenerationService : Service() {
                 revisedPrompt = item.revisedPrompt,
                 referenceBytes = references,
                 keepReferenceCopies = settings.keepReferenceCopies,
+            // Recorded even when the copies are not kept, so the viewer can explain why
+            // there is nothing to compare.
+            isEditResult = request.isEdit,
                 queueJobId = queueJobId,
             )
             produced++

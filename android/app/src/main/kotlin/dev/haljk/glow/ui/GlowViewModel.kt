@@ -155,6 +155,9 @@ class GlowViewModel(
     /** Which image the viewer is showing, if any. */
     var viewing by mutableStateOf<GalleryItem?>(null)
 
+    /** Set when the gallery opens a result straight into 并排, then cleared on close. */
+    var openInSideBySide by mutableStateOf(false)
+
     val presets get() = Presets.ALL
 
 

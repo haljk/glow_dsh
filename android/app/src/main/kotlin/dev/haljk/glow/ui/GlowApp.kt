@@ -7,6 +7,11 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -91,7 +96,7 @@ import dev.haljk.glow.data.JobRegistry
 import dev.haljk.glow.ui.theme.ContentMaxWidth
 import dev.haljk.glow.ui.theme.glow
 
-private enum class RootScreen { WORKBENCH, LIBRARY, SETTINGS }
+private enum class RootScreen { WORKBENCH, LIBRARY, JOBS, SETTINGS }
 
 @Composable
 fun GlowApp(vm: GlowViewModel) {
@@ -121,7 +126,19 @@ fun GlowApp(vm: GlowViewModel) {
             onOpenSettings = { screen = RootScreen.SETTINGS },
             onOpenArchive = { screen = RootScreen.LIBRARY },
             onOpenItem = { name -> vm.activeItems.firstOrNull { it.name == name }?.let { vm.viewing = it } },
+            onOpenJobs = { screen = RootScreen.JOBS },
         )
+
+        RootScreen.JOBS -> {
+            BackHandler { screen = RootScreen.WORKBENCH }
+            JobQueueScreen(
+                vm = vm,
+                onBack = { screen = RootScreen.WORKBENCH },
+                onOpenItem = { name ->
+                    vm.activeItems.firstOrNull { it.name == name }?.let { vm.viewing = it }
+                },
+            )
+        }
 
         RootScreen.LIBRARY -> {
             BackHandler { screen = RootScreen.WORKBENCH }
@@ -150,6 +167,7 @@ private fun WorkbenchScreen(
     onOpenSettings: () -> Unit,
     onOpenArchive: () -> Unit,
     onOpenItem: (String) -> Unit,
+    onOpenJobs: () -> Unit,
 ) {
     val job by JobRegistry.current.collectAsState()
     var showPresetSheet by remember { mutableStateOf(false) }
@@ -205,6 +223,11 @@ private fun WorkbenchScreen(
                             // full line on two words. It is a status, not content: it belongs next to the
                             // title, and tapping it is the shortcut into settings that the failing case
                             // needs anyway.
+                            // 后台继续 collapses the bar, so a running job needs somewhere to live:
+                            // this chip is that place, and it stays visible from any screen.
+                            if (job?.isActive == true) {
+                                JobChip(job!!, onOpenJobs)
+                            }
                             ConnectionPill(
                                 imageOk = vm.imageProbe?.ok,
                                 llmOk = vm.llmProbe?.ok,
@@ -541,7 +564,16 @@ private fun WorkbenchScreen(
                     // The home grid is a shelf, not the archive: show the newest few and
                     // send the rest to 全部作品, so the page does not grow with history.
                     items(vm.activeItems.take(8), key = { it.name }) { item ->
-                        GalleryTile(item = item, file = vm.fileOf(item), onOpen = { vm.viewing = item })
+                        GalleryTile(
+                            item = item,
+                            file = vm.fileOf(item),
+                            onOpen = { vm.openInSideBySide = false; vm.viewing = item },
+                            onCompare = if (item.refFiles.isNotEmpty()) {
+                                { vm.openInSideBySide = true; vm.viewing = item }
+                            } else {
+                                null
+                            },
+                        )
                     }
                 }
             }
@@ -578,33 +610,71 @@ private fun WorkbenchScreen(
     }
 
     if (showInstructionSheet) {
-        AlertDialog(
+        // A dialog clipped the text with no way to scroll it, and it showed the same
+        // sentence twice (once as 你写的, once inside the payload). One scrollable block,
+        // with the user's own sentence marked, answers the only question this panel has.
+        ModalBottomSheet(
             onDismissRequest = { showInstructionSheet = false },
-            confirmButton = {
-                TextButton(onClick = { showInstructionSheet = false }) { Text("知道了") }
-            },
-            title = { Text("会发送这段指令") },
-            text = {
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 16.dp),
+            ) {
+                Text("会发送的指令", style = MaterialTheme.typography.titleLarge)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "紫色是你写的那句，其余是应用补的约束。",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
                 val (typed, sent) = vm.previewParts()
-                Column {
-                    Text(
-                        "你写的",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(typed, style = MaterialTheme.typography.bodyMedium)
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        "会发送的完整指令",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(sent, style = MaterialTheme.typography.bodyMedium)
+                val accent = MaterialTheme.colorScheme.primary
+                val accentBg = MaterialTheme.colorScheme.primaryContainer
+                val marked = remember(typed, sent) {
+                    buildAnnotatedString {
+                        val needle = typed.takeIf { it.isNotBlank() && it != "（还没写）" }
+                        if (needle == null) {
+                            append(sent)
+                        } else {
+                            var cursor = 0
+                            while (true) {
+                                val at = sent.indexOf(needle, cursor)
+                                if (at < 0) break
+                                append(sent.substring(cursor, at))
+                                withStyle(SpanStyle(color = accent, background = accentBg)) {
+                                    append(needle)
+                                }
+                                cursor = at + needle.length
+                            }
+                            append(sent.substring(cursor))
+                        }
+                    }
                 }
-            },
-        )
+                Box(
+                    Modifier
+                        .weight(1f, fill = false)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Text(
+                        marked,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = { showInstructionSheet = false },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) { Text("知道了") }
+                Spacer(Modifier.height(16.dp))
+            }
+        }
     }
 }
 
@@ -1018,6 +1088,11 @@ private fun LibraryScreen(vm: GlowViewModel, snackbar: SnackbarHostState, onBack
                                 }
                             },
                             onLongPress = { selected = selected + item.name },
+                            onCompare = if (item.refFiles.isNotEmpty() && !selecting) {
+                                { vm.openInSideBySide = true; vm.viewing = item }
+                            } else {
+                                null
+                            },
                             selected = item.name in selected,
                         )
                     }
@@ -1060,3 +1135,174 @@ fun BackIcon(onBack: () -> Unit) {
 
 /** Exposed so a future settings screen can reset to the shipped defaults. */
 fun defaultDensity(): Density = Density.NORMAL
+
+/** Compact "still running" chip in the app bar; tapping it opens the 任务 screen. */
+@Composable
+private fun JobChip(snapshot: JobRegistry.Snapshot, onClick: () -> Unit) {
+    val label = when {
+        snapshot.stage == JobRegistry.Stage.QUEUED && snapshot.queuePosition > 0 -> "排队 ${snapshot.queuePosition}"
+        snapshot.percent > 0 -> "生成中 ${snapshot.percent}%"
+        else -> "排队中"
+    }
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(MaterialTheme.colorScheme.primaryContainer)
+            .clickable(onClick = onClick)
+            .heightIn(min = 32.dp)
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onPrimaryContainer,
+            maxLines = 1,
+        )
+    }
+}
+
+/**
+ * 任务 screen: the live job plus what already ran.
+ *
+ * 后台继续 used to be a one-way door — the bar collapsed and the only trace left was the
+ * system notification. This page is the in-app answer to "what is running, and how did the
+ * last few go".
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun JobQueueScreen(
+    vm: GlowViewModel,
+    onBack: () -> Unit,
+    onOpenItem: (String) -> Unit,
+) {
+    val job by JobRegistry.current.collectAsState()
+    val recent by JobRegistry.recent.collectAsState()
+    val newest = vm.activeItems.firstOrNull()?.name
+
+    Scaffold(
+        contentWindowInsets = WindowInsets.safeDrawing,
+        topBar = {
+            Column(Modifier.fillMaxWidth()) {
+                TopAppBar(
+                    title = { Text("任务", style = MaterialTheme.typography.headlineSmall) },
+                    navigationIcon = { BackIcon(onBack) },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background,
+                    ),
+                )
+                HorizontalDivider(
+                    thickness = 1.dp,
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                )
+            }
+        },
+    ) { padding ->
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+        ) {
+            val active = job
+            if (active != null && active.isActive) {
+                GlowCard {
+                    Text(
+                        when (active.stage) {
+                            JobRegistry.Stage.QUEUED ->
+                                if (active.queuePosition > 0) "排队中 · 第 ${active.queuePosition} 位" else "排队中"
+                            JobRegistry.Stage.RUNNING ->
+                                if (active.percent > 0) "正在生成 · ${active.percent}%" else "正在生成"
+                            else -> "正在处理"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        active.summary,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (active.etaSeconds > 0) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "约剩 ${active.etaSeconds / 60}:${(active.etaSeconds % 60).toString().padStart(2, '0')}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                JobRegistry.requestCancel()
+                                vm.post("如果还在排队，会取消；已经开跑就等它做完")
+                            },
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            ),
+                        ) { Text("取消") }
+                        Button(
+                            onClick = onBack,
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                        ) { Text("回工作台") }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+            } else {
+                Text(
+                    "现在没有在跑的任务。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(16.dp))
+            }
+
+            if (recent.isNotEmpty()) {
+                Text("最近的任务", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.height(8.dp))
+                recent.forEach { snapshot ->
+                    GlowCard {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    when (snapshot.stage) {
+                                        JobRegistry.Stage.DONE -> "已完成"
+                                        JobRegistry.Stage.FAILED -> "没成功"
+                                        else -> "进行中"
+                                    },
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = if (snapshot.stage == JobRegistry.Stage.FAILED) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                                )
+                                Text(
+                                    snapshot.summary.ifBlank { "—" },
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                )
+                                if (snapshot.stage == JobRegistry.Stage.FAILED && snapshot.message.isNotBlank()) {
+                                    Text(
+                                        snapshot.message,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                            }
+                            if (snapshot.stage == JobRegistry.Stage.DONE && newest != null) {
+                                TextButton(onClick = { onOpenItem(newest) }) { Text("查看") }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+                TextButton(onClick = { JobRegistry.forgetAll() }) { Text("清空记录") }
+            }
+        }
+    }
+}

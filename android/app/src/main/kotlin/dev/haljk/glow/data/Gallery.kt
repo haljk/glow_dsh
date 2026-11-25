@@ -27,6 +27,13 @@ data class GalleryItem(
     val revisedPrompt: String,
     /** The queue task this came from, so a result can be traced back upstream. */
     val queueJobId: String = "",
+    /**
+     * True when this result came from a reference photo.
+     *
+     * Without it the viewer cannot tell a 文生图 result (nothing to compare) from an
+     * edit whose copy was deleted; both look like a missing feature.
+     */
+    val isEdit: Boolean = false,
 ) {
     val file: File? = null
 
@@ -66,6 +73,7 @@ class GalleryStore(private val directory: File) {
         referenceBytes: List<ByteArray>,
         keepReferenceCopies: Boolean,
         queueJobId: String = "",
+        isEditResult: Boolean = referenceBytes.isNotEmpty(),
     ): GalleryItem {
         directory.mkdirs()
         val imageName = "$baseName.png"
@@ -92,6 +100,7 @@ class GalleryStore(private val directory: File) {
             createdAt = System.currentTimeMillis(),
             archived = false,
             refFiles = refNames,
+            isEdit = isEditResult,
             revisedPrompt = revisedPrompt,
             queueJobId = queueJobId,
         )
@@ -112,6 +121,7 @@ class GalleryStore(private val directory: File) {
             put("archived", item.archived)
             put("revisedPrompt", item.revisedPrompt)
             put("refFiles", JSONArray(item.refFiles))
+        put("isEdit", item.isEdit)
             put("queueJobId", item.queueJobId)
         }
         File(directory, sidecarName(item.name)).writeText(json.toString(2))
@@ -178,6 +188,7 @@ class GalleryStore(private val directory: File) {
             createdAt = json?.optLong("createdAt", imageFile.lastModified()) ?: imageFile.lastModified(),
             archived = json?.optBoolean("archived", false) ?: false,
             refFiles = refs,
+            isEdit = json?.optBoolean("isEdit") ?: false,
             revisedPrompt = json?.optString("revisedPrompt", "") ?: "",
             queueJobId = json?.optString("queueJobId", "") ?: "",
         )

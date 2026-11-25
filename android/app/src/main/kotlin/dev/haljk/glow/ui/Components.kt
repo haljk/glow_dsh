@@ -359,6 +359,8 @@ fun GalleryTile(
     onOpen: () -> Unit,
     onLongPress: (() -> Unit)? = null,
     selected: Boolean = false,
+    /** Shown as a 对比 chip when the original is still on disk; null hides it. */
+    onCompare: (() -> Unit)? = null,
 ) {
     val bitmap = rememberFileBitmap(file, targetPx = 420)
     Column(
@@ -418,6 +420,23 @@ fun GalleryTile(
                     )
                 }
             }
+            }
+            if (onCompare != null) {
+                // The comparison lives one level deep (open the photo, then pick 并排);
+                // without this chip a result that does have an original is indistinguishable
+                // from one that does not.
+                Text(
+                    "对比",
+                    color = MaterialTheme.glow.onScrim,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.glow.scrim.copy(alpha = 0.62f))
+                        .clickable { onCompare() }
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                )
             }
         }
         if (item.note.isNotBlank()) {

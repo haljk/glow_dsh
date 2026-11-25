@@ -45,12 +45,24 @@ object JobRegistry {
         val etaSeconds: Int = 0,
         /** 1 means "next"; only set while queued. */
         val queuePosition: Int = 0,
+        /** Set when the job reaches DONE or FAILED. */
+        val finishedAt: Long = 0,
     ) {
         val isActive: Boolean get() = stage != Stage.DONE && stage != Stage.FAILED
     }
 
     private val _current = MutableStateFlow<Snapshot?>(null)
     val current: StateFlow<Snapshot?> = _current.asStateFlow()
+
+    /**
+     * Jobs that already ended, newest first.
+     *
+     * The bottom bar only speaks for the job in front of you; once it is cleared or the
+     * user walks away, nothing in the app remembers it. This is what the 任务 screen lists
+     * behind the live one.
+     */
+    private val _recent = MutableStateFlow<List<Snapshot>>(emptyList())
+    val recent: StateFlow<List<Snapshot>> = _recent.asStateFlow()
 
     /** Bumped whenever a job finishes, so screens can refresh their gallery. */
     private val _revision = MutableStateFlow(0)
@@ -104,21 +116,49 @@ object JobRegistry {
 
     fun finish(produced: Int) {
         val snapshot = _current.value ?: return
-        _current.value = snapshot.copy(stage = Stage.DONE, produced = produced, percent = 100)
+        val done = snapshot.copy(
+            stage = Stage.DONE,
+            produced = produced,
+            percent = 100,
+            finishedAt = System.currentTimeMillis(),
+        )
+        _current.value = done
+        remember(done)
         cancelRequested = false
         _revision.value = _revision.value + 1
     }
 
     fun fail(message: String) {
         val snapshot = _current.value ?: return
-        _current.value = snapshot.copy(stage = Stage.FAILED, message = message)
+        val failed = snapshot.copy(
+            stage = Stage.FAILED,
+            message = message,
+            finishedAt = System.currentTimeMillis(),
+        )
+        _current.value = failed
+        remember(failed)
         cancelRequested = false
         _revision.value = _revision.value + 1
+    }
+
+    private fun remember(snapshot: Snapshot) {
+        _recent.value = (listOf(snapshot) + _recent.value).take(MAX_REMEMBERED)
+    }
+
+    /** Drop one finished job from the list, or a job the user no longer cares about. */
+    fun forget(id: String) {
+        _recent.value = _recent.value.filterNot { it.id == id }
+    }
+
+    fun forgetAll() {
+        _recent.value = emptyList()
     }
 
     fun requestCancel() {
         cancelRequested = true
     }
+
+    private const val MAX_REMEMBERED = 12
 
     /** Called by the screen once it has shown the outcome. */
     fun clear() {
