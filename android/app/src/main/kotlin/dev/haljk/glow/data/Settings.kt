@@ -25,7 +25,10 @@ data class Settings(
     val llmBaseUrl: String = DEFAULT_LLM_URL,
     val llmModel: String = DEFAULT_LLM_MODEL,
     /**
-     * Business deadline for one job, queue wait included. Polling is cheap, so
+     * Read timeout for one request, and the whole budget of a 同步模式 job.
+     *
+     * 排队模式 does not use it as a deadline: the client polls until the service reports
+     * success, failure or cancellation, however long that takes. Polling is cheap, so
      * this is the only long number left; it has to outlast one queued 2K edit.
      */
     val imageTimeoutSeconds: Int = 900,

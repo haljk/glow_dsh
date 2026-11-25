@@ -294,7 +294,7 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
                         )
                     }
                     Text(
-                        "2K 与多参考图精修要几分钟，不建议调小。",
+                        "排队模式不按这个时间掐断：任务会一直等到服务端给出结果或失败。这个上限只管同步模式的单次请求。",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 8.dp),

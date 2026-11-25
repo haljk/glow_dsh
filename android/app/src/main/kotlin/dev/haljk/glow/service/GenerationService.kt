@@ -142,7 +142,6 @@ class GenerationService : Service() {
         val client = ModelClient(settings)
         val store = PendingJobStore(filesDir)
         val startedAt = System.currentTimeMillis()
-        val deadline = startedAt + settings.imageTimeoutSeconds * 1000L
 
         val idempotencyKey = request.idempotencyKey.ifEmpty {
             "glow-${request.seed}-${System.currentTimeMillis()}"
@@ -174,18 +173,12 @@ class GenerationService : Service() {
             ),
         )
 
+        // No wall-clock ceiling. A queued job keeps its place until the service says it
+        // finished, failed or was cancelled; the user can stop waiting at any time from
+        // the bottom bar. The old deadline turned a slow queue into a client-side failure
+        // while the model was still working, which is the worst of both worlds.
         var statusFailures = 0
         while (true) {
-            val now = System.currentTimeMillis()
-            if (now > deadline) {
-                // Give the slot back if the model never started on it.
-                if (JobRegistry.current.value?.stage != JobRegistry.Stage.RUNNING) {
-                    runCatching { client.cancelJob(remoteId) }
-                }
-                store.clear()
-                throw ModelException("等太久了（超过 ${settings.imageTimeoutSeconds} 秒），任务可能还在服务端跑")
-            }
-
             if (JobRegistry.cancelRequested) {
                 val accepted = runCatching { client.cancelJob(remoteId) }.getOrDefault(false)
                 if (accepted) {
@@ -210,7 +203,7 @@ class GenerationService : Service() {
                 statusFailures++
                 if (statusFailures >= MAX_STATUS_FAILURES) {
                     store.clear()
-                    throw ModelException("一直读不到任务进度：${retriable.message}")
+                    throw ModelException("连续 ${MAX_STATUS_FAILURES} 次读不到任务进度，先停在这里：${retriable.message}")
                 }
                 JobRegistry.stage(
                     JobRegistry.current.value?.stage ?: JobRegistry.Stage.QUEUED,
@@ -273,7 +266,7 @@ class GenerationService : Service() {
                 }
 
                 else -> {
-                    // An unknown status is not terminal: keep polling until the deadline.
+                    // An unknown status is not terminal: keep polling.
                     JobRegistry.stage(JobRegistry.Stage.QUEUED, message = "状态是 $state.status，继续等")
                 }
             }
@@ -522,7 +515,10 @@ class GenerationService : Service() {
         const val POLL_INTERVAL_MS = 4000L
 
         /** ~80 s of unreadable status before giving up, so a blip is not fatal. */
-        private const val MAX_STATUS_FAILURES = 20
+        // Consecutive unreadable polls, not elapsed time: 45 x 4s ≈ 3 minutes of a service that
+    // will not answer. A dropped Wi-Fi frame or a server restart should not kill a job that
+    // is still alive on the other side.
+    private const val MAX_STATUS_FAILURES = 45
 
         private const val MAX_SUBMIT_ATTEMPTS = 6
 
