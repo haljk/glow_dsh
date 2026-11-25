@@ -3,6 +3,7 @@ package dev.haljk.glow.data
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
@@ -51,6 +52,28 @@ object JobRegistry {
         val isActive: Boolean get() = stage != Stage.DONE && stage != Stage.FAILED
     }
 
+    /**
+     * Task records on disk. Attached once at startup; every state change below writes
+     * through, so the 任务 screen and the comparison view keep working after the process
+     * dies and after the in-memory history is cleared.
+     */
+    var tasks: TaskStore? = null
+        private set
+
+    fun attach(store: TaskStore) {
+        tasks = store
+    }
+
+    private fun recordId(): String = _current.value?.id ?: ""
+
+    private fun writeThrough(change: (TaskRecord) -> TaskRecord) {
+        val store = tasks ?: return
+        val id = recordId()
+        if (id.isEmpty()) return
+        if (store.find(id) == null) return
+        store.update(id, change)
+    }
+
     private val _current = MutableStateFlow<Snapshot?>(null)
     val current: StateFlow<Snapshot?> = _current.asStateFlow()
 
@@ -73,8 +96,24 @@ object JobRegistry {
     var cancelRequested: Boolean = false
         private set
 
-    fun start(id: String, summary: String, expected: Int) {
+    fun start(id: String, summary: String, expected: Int, note: String = "", prompt: String = "", size: String = "") {
         cancelRequested = false
+        tasks?.let { store ->
+            val now = System.currentTimeMillis()
+            store.upsert(
+                TaskRecord(
+                    id = id,
+                    createdAt = now,
+                    updatedAt = now,
+                    status = TaskRecord.STATUS_QUEUED,
+                    summary = summary,
+                    note = note,
+                    prompt = prompt,
+                    size = size,
+                    count = expected,
+                ),
+            )
+        }
         _current.value = Snapshot(
             id = id,
             summary = summary,
@@ -107,6 +146,19 @@ object JobRegistry {
             queuePosition = queuePosition.coerceAtLeast(0),
             message = message,
         )
+        writeThrough {
+            it.copy(
+                status = when (stage) {
+                    Stage.QUEUED -> TaskRecord.STATUS_QUEUED
+                    Stage.RUNNING, Stage.SUBMITTING, Stage.FETCHING -> TaskRecord.STATUS_RUNNING
+                    Stage.DONE -> TaskRecord.STATUS_DONE
+                    Stage.FAILED -> TaskRecord.STATUS_FAILED
+                },
+                percent = percent.coerceIn(0, 100),
+                etaSeconds = etaSeconds.coerceAtLeast(0),
+                message = message,
+            )
+        }
     }
 
     fun progress(produced: Int, message: String = "") {
@@ -114,7 +166,7 @@ object JobRegistry {
         _current.value = snapshot.copy(produced = produced, message = message)
     }
 
-    fun finish(produced: Int) {
+    fun finish(produced: Int, resultNames: List<String> = emptyList()) {
         val snapshot = _current.value ?: return
         val done = snapshot.copy(
             stage = Stage.DONE,
@@ -124,6 +176,13 @@ object JobRegistry {
         )
         _current.value = done
         remember(done)
+        writeThrough {
+            it.copy(
+                status = TaskRecord.STATUS_DONE,
+                percent = 100,
+                resultNames = if (resultNames.isEmpty()) it.resultNames else resultNames,
+            )
+        }
         cancelRequested = false
         _revision.value = _revision.value + 1
     }
@@ -137,6 +196,7 @@ object JobRegistry {
         )
         _current.value = failed
         remember(failed)
+        writeThrough { it.copy(status = TaskRecord.STATUS_FAILED, message = message) }
         cancelRequested = false
         _revision.value = _revision.value + 1
     }
@@ -186,6 +246,15 @@ data class PendingJob(
     val seed: Long,
     val isEdit: Boolean,
     val idempotencyKey: String,
+    /**
+     * The picker URIs the job was submitted with.
+     *
+     * A resumed edit used to arrive with no references at all, so its result was saved
+     * without the original copy and the comparison view silently showed one image. The
+     * grants usually survive a process death; when they do not, reading them fails and
+     * the result is stored without a copy as before.
+     */
+    val referenceUris: List<String> = emptyList(),
 )
 
 class PendingJobStore(private val directory: File) {
@@ -206,6 +275,7 @@ class PendingJobStore(private val directory: File) {
                 put("seed", job.seed)
                 put("isEdit", job.isEdit)
                 put("idempotencyKey", job.idempotencyKey)
+                put("referenceUris", JSONArray(job.referenceUris))
             }.toString(2),
         )
     }.isSuccess
@@ -227,6 +297,9 @@ class PendingJobStore(private val directory: File) {
             seed = json.optLong("seed", 0L),
             isEdit = json.optBoolean("isEdit", false),
             idempotencyKey = json.optString("idempotencyKey", ""),
+            referenceUris = json.optJSONArray("referenceUris")?.let { array ->
+                buildList { for (i in 0 until array.length()) add(array.optString(i)) }
+            } ?: emptyList(),
         )
     }.getOrNull()
 

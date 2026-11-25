@@ -172,13 +172,32 @@ class GalleryStore(private val directory: File) {
         val sidecar = File(directory, sidecarName(name))
         val json = runCatching { if (sidecar.isFile) JSONObject(sidecar.readText()) else null }.getOrNull()
         val (width, height) = readPngSize(imageFile)
-        val refs = json?.optJSONArray("refFiles")?.let { array ->
+        val promptText = json?.optString("prompt", "") ?: ""
+        // Sidecars written before the flag existed have no isEdit; an edit payload always
+        // opens with the reference placeholder, so that inference is safe.
+        val inferredEdit = if (json?.has("isEdit") == true) {
+            json.optBoolean("isEdit")
+        } else {
+            promptText.contains("<Picture 1>")
+        }
+        val recorded = json?.optJSONArray("refFiles")?.let { array ->
             buildList { for (i in 0 until array.length()) add(array.optString(i)) }
         } ?: emptyList()
+        // Self-healing for edits only: an older build could write the copy without
+        // recording it, leaving a ref file nothing points at. A text generation has no
+        // business adopting stray files, so the prompt prefix gates this.
+        val refs = when {
+            recorded.isNotEmpty() -> recorded
+            inferredEdit -> {
+                val base = name.removeSuffix(".png")
+                (1..8).map { "$base.ref-$it.png" }.filter { File(directory, it).isFile }
+            }
+            else -> emptyList()
+        }
 
         return GalleryItem(
             name = name,
-            prompt = json?.optString("prompt", "") ?: "",
+            prompt = promptText,
             note = json?.optString("note", "") ?: "",
             presetId = json?.optString("presetId", "") ?: "",
             seed = json?.optLong("seed", 0L) ?: 0L,
@@ -188,7 +207,7 @@ class GalleryStore(private val directory: File) {
             createdAt = json?.optLong("createdAt", imageFile.lastModified()) ?: imageFile.lastModified(),
             archived = json?.optBoolean("archived", false) ?: false,
             refFiles = refs,
-            isEdit = json?.optBoolean("isEdit") ?: false,
+            isEdit = inferredEdit,
             revisedPrompt = json?.optString("revisedPrompt", "") ?: "",
             queueJobId = json?.optString("queueJobId", "") ?: "",
         )

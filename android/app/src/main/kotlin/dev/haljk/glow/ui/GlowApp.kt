@@ -1177,7 +1177,25 @@ private fun JobQueueScreen(
     onOpenItem: (String) -> Unit,
 ) {
     val job by JobRegistry.current.collectAsState()
-    val recent by JobRegistry.recent.collectAsState()
+    // Read from disk, not from the in-memory history: the record outlives the
+    // process, and it is the only thing that knows where the originals are.
+    val stored = remember(job?.stage, job?.percent, job?.id) { vm.taskStore.list() }
+    val recent = stored.map { record ->
+        JobRegistry.Snapshot(
+            id = record.id,
+            summary = record.summary.ifBlank { record.note },
+            stage = when (record.status) {
+                dev.haljk.glow.data.TaskRecord.STATUS_DONE -> JobRegistry.Stage.DONE
+                dev.haljk.glow.data.TaskRecord.STATUS_FAILED -> JobRegistry.Stage.FAILED
+                else -> JobRegistry.Stage.QUEUED
+            },
+            startedAt = record.createdAt,
+            expected = record.count,
+            produced = record.resultNames.size,
+            message = if (record.referenceFiles.isEmpty()) record.message else record.message,
+            percent = record.percent,
+        )
+    }
     val newest = vm.activeItems.firstOrNull()?.name
 
     Scaffold(

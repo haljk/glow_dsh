@@ -30,6 +30,7 @@ import dev.haljk.glow.data.ModelException
 import dev.haljk.glow.data.PendingJobStore
 import dev.haljk.glow.data.Settings
 import dev.haljk.glow.data.SettingsStore
+import dev.haljk.glow.data.TaskStore
 import dev.haljk.glow.service.GenerationService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -72,6 +73,14 @@ class GlowViewModel(
     private val favoriteStore = FavoriteStore(application.filesDir)
 
     // ---- settings
+    val taskStore = TaskStore(File(getApplication<Application>().filesDir, "tasks"))
+
+    init {
+        // One store for the whole process: the registry writes every state change through
+        // it, and the viewer reads originals back from it.
+        JobRegistry.attach(taskStore)
+    }
+
     var settings by mutableStateOf(settingsStore.load())
         private set
     var imageProbe by mutableStateOf<ModelClient.ProbeResult?>(null)
@@ -413,6 +422,18 @@ class GlowViewModel(
     }
 
     fun fileOf(item: GalleryItem): File = galleryStore.fileOf(item.name)
+    /**
+     * The original that belongs to this result.
+     *
+     * Prefers the copy next to the image, then falls back to the task that produced it —
+     * the task copy is written at submit time and survives what the gallery copy does not.
+     */
+    fun originalOf(item: GalleryItem): File? {
+        refFileOf(item, 0)?.let { return it }
+        val task = taskStore.findByResult(item.name) ?: return null
+        return taskStore.referenceFiles(task.id).firstOrNull()
+    }
+
     fun refFileOf(item: GalleryItem, index: Int): File? =
         item.refFiles.getOrNull(index)?.let { galleryStore.fileOf(it) }
 

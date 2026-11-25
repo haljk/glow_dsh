@@ -16,6 +16,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
@@ -133,7 +139,7 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
     }
 
     val resultFile = vm.fileOf(item)
-    val refFile = vm.refFileOf(item, 0)
+    val refFile = vm.originalOf(item)
     val chrome = MaterialTheme.glow.viewerSurface
     val onChrome = MaterialTheme.glow.viewerContent
     val danger = MaterialTheme.glow.viewerDanger
@@ -229,7 +235,8 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
                     onToggle = { showReference = !showReference },
                 )
 
-                CompareMode.SIDE -> Row(
+                CompareMode.SIDE -> ZoomableArea(Modifier.fillMaxSize()) {
+                    Row(
                     Modifier.fillMaxSize(),
                     // Two nearly identical pictures butted together are unreadable:
                     // the seam is what tells you there are two of them.
@@ -242,6 +249,7 @@ fun ViewerScreen(vm: GlowViewModel, item: GalleryItem, onClose: () -> Unit) {
                     LabeledPane("结果", resultFile, Modifier.weight(1f)) {
                         showReference = false
                         mode = CompareMode.SWITCH
+                    }
                     }
                 }
 
@@ -531,13 +539,15 @@ private fun SwitchCompare(
             },
         contentAlignment = Alignment.Center,
     ) {
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap,
-                contentDescription = if (showReference) "原图" else "结果",
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Fit,
-            )
+                if (bitmap != null) {
+            ZoomableArea(Modifier.fillMaxSize()) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = if (showReference) "原图" else "结果",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit,
+                )
+            }
         }
     }
 }
@@ -564,6 +574,7 @@ private fun WipeCompare(
     val result = rememberFileBitmap(resultFile, targetPx = 1800)
     var widthPx by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
+    ZoomableArea(Modifier.fillMaxSize()) {
     Box(
         Modifier
             .fillMaxSize()
@@ -619,6 +630,7 @@ private fun WipeCompare(
             }
         }
     }
+    }
 }
 
 @Composable
@@ -638,6 +650,51 @@ private fun DrawPane(
         }
 
     }
+}
+
+/**
+ * Pinch-to-zoom that leaves single-finger gestures alone.
+ *
+ * `transformable` consumes the whole event stream, which is why comparison mode had no
+ * zoom at all: a single-finger swipe belongs to 切换 and to the 滑动 divider. This consumes
+ * only while a second finger is down, so pinch and swipe share the area.
+ */
+@Composable
+private fun ZoomableArea(
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    Box(
+        modifier
+            .clipToBounds()
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val event = awaitPointerEvent()
+                        if (event.changes.size >= 2) {
+                            val zoom = event.calculateZoom()
+                            if (zoom != 1f) {
+                                scale = (scale * zoom).coerceIn(1f, 5f)
+                                val pan = event.calculatePan()
+                                offset = if (scale <= 1.01f) Offset.Zero else offset + pan
+                                event.changes.forEach { it.consume() }
+                            }
+                        }
+                    } while (event.changes.any { it.pressed })
+                }
+            }
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                translationX = offset.x
+                translationY = offset.y
+            },
+        contentAlignment = Alignment.Center,
+        content = content,
+    )
 }
 
 @Composable

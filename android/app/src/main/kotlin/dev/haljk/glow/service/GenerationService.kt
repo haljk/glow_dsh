@@ -72,7 +72,14 @@ class GenerationService : Service() {
         }
 
         createChannel()
-        JobRegistry.start(request.summary, request.summary, request.count)
+        JobRegistry.start(
+        id = "t-${request.seed}-${System.currentTimeMillis()}",
+        summary = request.summary,
+        expected = request.count,
+        note = request.note,
+        prompt = request.prompt,
+        size = request.size,
+    )
         if (request.resumeRemoteId.isNotEmpty()) {
             // The queue never lost the task; this process did.
             JobRegistry.submitted(request.resumeRemoteId)
@@ -125,7 +132,7 @@ class GenerationService : Service() {
         } else {
             client.generate(request.prompt, request.size, request.count, request.seed)
         }
-        val produced = saveImages(
+        val producedNames = saveImages(
             request = request,
             settings = settings,
             startedAt = startedAt,
@@ -133,7 +140,7 @@ class GenerationService : Service() {
             load = { images[it].bytes },
             referenceBytes = references.map { it.bytes },
         )
-        finishWith(request, produced)
+        finishWith(request, producedNames.size, producedNames)
     }
 
     // ------------------------------------------------------------ queue mode
@@ -147,7 +154,10 @@ class GenerationService : Service() {
             "glow-${request.seed}-${System.currentTimeMillis()}"
         }
         // References are only needed to submit; a resumed task already has them.
-        val references = if (request.resumeRemoteId.isEmpty()) readReferences(request) else emptyList()
+        // Both paths read the references: a resumed edit needs them to keep its original
+        // copy, and reading costs one decode. If the grants are gone the read comes back
+        // empty, which is the old behaviour rather than a crash.
+        val references = readReferences(request)
 
         var remoteId = request.resumeRemoteId
         var discardResult = false
@@ -170,6 +180,7 @@ class GenerationService : Service() {
                 seed = request.seed,
                 isEdit = request.isEdit,
                 idempotencyKey = idempotencyKey,
+                referenceUris = request.referenceUris,
             ),
         )
 
@@ -241,7 +252,7 @@ class GenerationService : Service() {
                         throw ModelException("已放弃这次结果，模型那边已经跑完了")
                     }
                     val items = state.data.ifEmpty { fallbackItems(remoteId, request) }
-                    val produced = saveImages(
+                    val producedNames = saveImages(
                         request = request,
                         settings = settings,
                         startedAt = startedAt,
@@ -251,7 +262,7 @@ class GenerationService : Service() {
                         referenceBytes = references.map { it.bytes },
                     )
                     store.clear()
-                    finishWith(request, produced)
+                    finishWith(request, producedNames.size, producedNames)
                     return
                 }
 
@@ -340,10 +351,11 @@ class GenerationService : Service() {
         // wait could come back empty, which silently dropped the reference copy —
         // and with it the whole comparison view.
         referenceBytes: List<ByteArray> = emptyList(),
-    ): Int {
+    ): List<String> {
         val gallery = GalleryStore(File(filesDir, "gallery")).also { it.ensureDir() }
         val references = if (request.isEdit) referenceBytes else emptyList()
         var produced = 0
+        val savedNames = mutableListOf<String>()
         items.forEachIndexed { index, item ->
             val bytes = try {
                 load(index)
@@ -352,7 +364,7 @@ class GenerationService : Service() {
             }
             val seed = if (item.seed != 0L) item.seed else request.seed + index
             val (width, height) = GalleryStore.pngSize(bytes)
-            gallery.save(
+            val saved = gallery.save(
                 baseName = GalleryStore.baseName(seed),
                 pngBytes = bytes,
                 prompt = request.prompt,
@@ -371,14 +383,25 @@ class GenerationService : Service() {
             isEditResult = request.isEdit,
                 queueJobId = queueJobId,
             )
+            savedNames += saved.name
             produced++
             JobRegistry.progress(produced)
         }
-        return produced
+        // Keep the original inside the task directory as well: the gallery copy can be
+        // turned off, deleted, or lost with an expired picker grant, and the comparison
+        // view should not care.
+        JobRegistry.tasks?.let { store ->
+            val taskId = JobRegistry.current.value?.id
+            if (taskId != null) {
+                val names = store.saveReferences(taskId, references)
+                store.update(taskId) { it.copy(referenceFiles = names, resultNames = savedNames) }
+            }
+        }
+        return savedNames
     }
 
-    private fun finishWith(request: JobRequest, produced: Int) {
-        JobRegistry.finish(produced)
+    private fun finishWith(request: JobRequest, produced: Int, resultNames: List<String> = emptyList()) {
+        JobRegistry.finish(produced, resultNames)
         val verb = if (request.isEdit) "精修" else "生成"
         Log.i(TAG, "generation done: $produced image(s)")
         notifyFinal("${verb}完成", "已保存 $produced 张，回到阁楼查看")
