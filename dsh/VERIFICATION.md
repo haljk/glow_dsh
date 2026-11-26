@@ -230,7 +230,7 @@ node tools/check-recovery.mjs
 （`GLOW_POLL_MS`、`GLOW_STATUS_FAILURES`），默认值仍是 4 秒与 45 次，正常运行不会设置它们。
 这一条写进了 `DESIGN.md` 的已知限制，不藏着。
 
-**顺带核对**：`android/DESIGN.md` §7.2 / §7.3 今天已经改成同一口径（「只停止等待，任务照常跟到底」
+**顺带核对**：`../android/DESIGN.md` §7.2 / §7.3 今天已经改成同一口径（「只停止等待，任务照常跟到底」
 「UNRETRIEVED 待取回 + 继续取回」），插件端现在是照它对齐，不是另立一套。
 
 ## 4. 没验的、验不到的

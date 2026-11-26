@@ -52,9 +52,9 @@
 | `tools/check-glow.mjs` | 回归脚本：209 项断言（预设、冻结清单、角色、尺寸、设置迁移、直发不叠模板） |
 | `tools/check-edit-verbatim.mjs` | 端到端：直发模式在排队与直连两条路径上都不叠模板（假服务 + 临时 HOME，不碰真实配置） |
 | `tools/check-recovery.mjs` | 端到端：取消太晚不丢图、连不上转「结果待取回」、按任务号取回、重启自动接上 |
-| `android/DESIGN.md` | **Android 版的权威说明**：界面规范、指令合成与直发模式、任务模型与取回、取消语义、构建与真机验证记录 |
-| `tools/build-android.ps1` | 构建 Android 版：镜像到 ASCII 目录、按 git 生成版本号、跑单测、产物写进 `dist/` |
-| `tools/stub-queue.mjs` | 假队列服务：真 HTTP + 真 PNG，按秒数推状态、可模拟服务端出错，用于手工验证「按任务号取回」（Android 真机调试也用它） |
+| `../android/DESIGN.md` | **Android 版的权威说明**：界面规范、指令合成与直发模式、任务模型与取回、取消语义、构建与真机验证记录 |
+| `../tools/build-android.ps1` | 构建 Android 版：镜像到 ASCII 目录、按 git 生成版本号、跑单测、产物写进 `dist/` |
+| `../tools/stub-queue.mjs` | 假队列服务：真 HTTP + 真 PNG，按秒数推状态、可模拟服务端出错，用于手工验证「按任务号取回」（Android 真机调试也用它） |
 
 跑一遍：
 
@@ -107,4 +107,4 @@ npm run verify    # 语法检查 + 上面两个脚本
 
 ## License
 
-[MIT](LICENSE)
+[MIT](../LICENSE)
