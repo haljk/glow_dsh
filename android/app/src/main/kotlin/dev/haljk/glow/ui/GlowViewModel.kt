@@ -295,6 +295,18 @@ class GlowViewModel(
         probeServices()
     }
 
+    /**
+     * 直发模式, switched from the workbench rather than the settings screen.
+     *
+     * It is saved like any other setting so it survives a restart, but it is not a
+     * connection setting: probing both services on every tap would be noise, and the
+     * status pill has nothing new to say.
+     */
+    fun setRawInstruction(on: Boolean) {
+        if (settings.rawInstruction == on) return
+        settings = settingsStore.save(settings.copy(rawInstruction = on))
+    }
+
     fun probeServices() {
         probing = true
         viewModelScope.launch {

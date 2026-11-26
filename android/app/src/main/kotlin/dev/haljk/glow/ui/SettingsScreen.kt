@@ -79,7 +79,6 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
     var imageTimeout by remember(current) { mutableStateOf(current.imageTimeoutSeconds.toString()) }
     var llmTimeout by remember(current) { mutableStateOf(current.llmTimeoutSeconds.toString()) }
     var keepRefs by remember(current) { mutableStateOf(current.keepReferenceCopies) }
-    var rawMode by remember(current) { mutableStateOf(current.rawInstruction) }
     var host by remember(current) { mutableStateOf(hostFrom(current.imageBaseUrl)) }
     var advancedOpen by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
@@ -109,7 +108,10 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
         imageTimeoutSeconds = imageTimeout.toIntOrNull() ?: current.imageTimeoutSeconds,
         llmTimeoutSeconds = llmTimeout.toIntOrNull() ?: current.llmTimeoutSeconds,
         keepReferenceCopies = keepRefs,
-        rawInstruction = rawMode,
+        // No longer edited here: the switch lives next to the instruction field, where
+        // the decision is actually made. The value still has to travel through this
+        // copy, or saving any other setting would reset it.
+        rawInstruction = current.rawInstruction,
     )
 
     Scaffold(
@@ -305,28 +307,9 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
 
                 // 精修与合成 normally get the preset sentence, one sentence per reference
                 // photo and the protection clause wrapped around what the user wrote.
-                // This switch is for the user who already wrote the whole instruction.
-                GroupTitle("出图指令")
-                GlowCard {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { rawMode = !rawMode }
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("直发模式", style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                "直接发我写的完整指令，不套用模板：不加预设句式、参考图说明和「其他都不要动」这类保真约束",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(checked = rawMode, onCheckedChange = { rawMode = it })
-                    }
-                }
+                // The switch for the user who already wrote the whole instruction now
+                // lives next to that instruction field on the workbench, not here: it is
+                // a decision about this one picture, not a machine setting.
 
                 GroupTitle("本地存储")
                 GlowCard {
@@ -448,7 +431,6 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
                     imageTimeout = defaults.imageTimeoutSeconds.toString()
                     llmTimeout = defaults.llmTimeoutSeconds.toString()
                     keepRefs = defaults.keepReferenceCopies
-                    rawMode = defaults.rawInstruction
                     vm.saveSettings(defaults)
                 }) { Text("恢复默认", color = MaterialTheme.colorScheme.error) }
             },

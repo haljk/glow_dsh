@@ -65,6 +65,7 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -464,7 +465,8 @@ private fun WorkbenchScreen(
                             // the second step instead of the third.
                             Scenario.RETOUCH ->
                                 if (vm.settings.rawInstruction) "② 写完整指令" else "③ 补充要求"
-                            Scenario.COMBINE -> "② 想怎么合"
+                            Scenario.COMBINE ->
+                                if (vm.settings.rawInstruction) "② 写完整指令" else "② 想怎么合"
                         }
                         val hint = when (vm.scenario) {
                             Scenario.TEXT -> "大白话就行，例如「雨后的旧书店，暖黄吊灯」"
@@ -490,6 +492,33 @@ private fun WorkbenchScreen(
                             textStyle = MaterialTheme.typography.bodyLarge,
                             shape = RoundedCornerShape(12.dp),
                         )
+                        // The switch sits with the text it governs, not in the settings
+                        // screen: it is a decision about this picture, and hunting for it
+                        // in another screen while typing is the wrong trade.
+                        if (vm.scenario != Scenario.TEXT) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(top = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("直发模式", style = MaterialTheme.typography.titleSmall)
+                                    Text(
+                                        if (vm.settings.rawInstruction) {
+                                            "只发我写的这段，不套模板；「图 1」会换成出图服务认的写法"
+                                        } else {
+                                            "打开后只发我写的这段，不加预设句式和保真约束"
+                                        },
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Switch(
+                                    checked = vm.settings.rawInstruction,
+                                    onCheckedChange = { vm.setRawInstruction(it) },
+                                    modifier = Modifier.padding(start = 12.dp),
+                                )
+                            }
+                        }
                         if (vm.favorites.isNotEmpty()) {
                             Spacer(Modifier.height(8.dp))
                             FavoritesRow(
