@@ -222,7 +222,7 @@ class QueueClientTest {
         val result = client.probeImage()
 
         assertTrue(result.ok)
-        assertTrue(result.detail, result.detail.contains("模型机没响应"))
+        assertTrue(result.detail, result.detail.contains("出图的机器没响应"))
         assertTrue(result.detail, result.detail.contains("排队 2"))
     }
 }

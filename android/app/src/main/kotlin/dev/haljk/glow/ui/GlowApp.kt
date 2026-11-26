@@ -289,9 +289,15 @@ private fun WorkbenchScreen(
                                     onBackground = { progressMinimized = true },
                                     onCancel = {
                                         JobRegistry.requestCancel()
-                                        vm.post("如果还在排队，会取消；已经开跑就等它做完")
+                                        vm.post("如果还在排队，会取消；已经开跑就停止等待，结果跑完会自动保存")
                                     },
                                 )
+                                job != null && job!!.stage == JobRegistry.Stage.UNRETRIEVED ->
+                                    JobRetrieveBar(
+                                        snapshot = job!!,
+                                        onRetrieve = { vm.recoverPending() },
+                                        onDismiss = { JobRegistry.clear() },
+                                    )
                                 job != null && job!!.stage == JobRegistry.Stage.DONE ->
                                     JobDoneBar(
                                         onView = newestItemId?.let { name -> { onOpenItem(name) } },
@@ -391,6 +397,7 @@ private fun WorkbenchScreen(
                                 onRemove = { vm.removeRef(it) },
                                 onPickRole = { showRoleSheetFor = it },
                                 showRoles = vm.scenario == Scenario.COMBINE,
+                                rolesEditable = !vm.settings.rawInstruction,
                             )
                         }
                     }
@@ -398,6 +405,18 @@ private fun WorkbenchScreen(
 
                 if (vm.scenario == Scenario.RETOUCH) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
+                        if (vm.settings.rawInstruction) {
+                            // The preset card is hidden rather than left inert: a control
+                            // that can be tapped and changes nothing is worse than absent.
+                            GlowCard {
+                                Text("直发模式：预设这次不参与", style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    "下面写清要改什么，写什么就发什么；「图 1」会自动换成出图服务认的写法。",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        } else {
                         GlowCard {
                             SectionHeader(
                                 title = "② 要做什么",
@@ -433,6 +452,7 @@ private fun WorkbenchScreen(
                                 ) { Text("不用预设") }
                             }
                         }
+                        }
                     }
                 }
 
@@ -440,12 +460,19 @@ private fun WorkbenchScreen(
                     GlowCard {
                         val title = when (vm.scenario) {
                             Scenario.TEXT -> "写一句描述"
-                            Scenario.RETOUCH -> "③ 补充要求"
+                            // 直发模式 hides the preset card, so the wording section becomes
+                            // the second step instead of the third.
+                            Scenario.RETOUCH ->
+                                if (vm.settings.rawInstruction) "② 写完整指令" else "③ 补充要求"
                             Scenario.COMBINE -> "② 想怎么合"
                         }
                         val hint = when (vm.scenario) {
                             Scenario.TEXT -> "大白话就行，例如「雨后的旧书店，暖黄吊灯」"
-                            Scenario.RETOUCH -> if (selectedPreset != null) "可以不写" else "写清只改哪里，例如「背景换成浅灰 studio」"
+                            Scenario.RETOUCH -> when {
+                                vm.settings.rawInstruction -> "直发模式：要把要求写全，预设不参与"
+                                selectedPreset != null -> "可以不写"
+                                else -> "写清只改哪里，例如「背景换成浅灰 studio」"
+                            }
                             Scenario.COMBINE -> "例如「把图 1 的人放进图 2 的咖啡馆」"
                         }
                         SectionHeader(
@@ -634,7 +661,14 @@ private fun WorkbenchScreen(
                 Text("会发送的指令", style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "紫色是你写的那句，其余是应用补的约束。",
+                    if (vm.settings.rawInstruction) {
+                        // Says what it does and does what it says: the only edit left in this
+                        // mode is the picture token, and hiding that would be the same kind of
+                        // half-truth this panel exists to prevent.
+                        "直发模式：只发你写的这段文字，模板一个字都不加。「图 1」这类写法会换成出图服务认的写法。"
+                    } else {
+                        "紫色是你写的那句，其余是应用补的约束。"
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -777,6 +811,8 @@ private fun RefStrip(
     onRemove: (String) -> Unit,
     onPickRole: (String) -> Unit,
     showRoles: Boolean,
+    /** 直发模式不拼角色句，角色表就不该还能点开——点了一点作用都没有。 */
+    rolesEditable: Boolean = true,
 ) {
     LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         items(refs) { slot ->
@@ -789,7 +825,7 @@ private fun RefStrip(
                         .aspectRatio(1f)
                         .clip(RoundedCornerShape(12.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .clickable { onPickRole(slot.uri) },
+                        .then(if (rolesEditable) Modifier.clickable { onPickRole(slot.uri) } else Modifier),
                     ) {
                     Box(
                         Modifier
@@ -829,7 +865,7 @@ private fun RefStrip(
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    if (showRoles) slot.role.label else "作为：" + slot.role.label,
+                    if (!rolesEditable) "只当参考图用" else if (showRoles) slot.role.label else "作为：" + slot.role.label,
                     style = MaterialTheme.typography.labelMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -1245,7 +1281,7 @@ private fun JobQueueScreen(
                         Button(
                             onClick = {
                                 JobRegistry.requestCancel()
-                                vm.post("如果还在排队，会取消；已经开跑就等它做完")
+                                vm.post("如果还在排队，会取消；已经开跑就停止等待，结果跑完会自动保存")
                             },
                             modifier = Modifier.weight(1f).heightIn(min = 48.dp),
                             colors = ButtonDefaults.buttonColors(
@@ -1275,18 +1311,25 @@ private fun JobQueueScreen(
                 stored.forEach { record ->
                     val done = record.status == dev.haljk.glow.data.TaskRecord.STATUS_DONE
                     val failed = record.status == dev.haljk.glow.data.TaskRecord.STATUS_FAILED
+                    // The server still has this one; only our copy of the answer is
+                    // missing. That is a "come back for it" state, not a failure.
+                    val unretrieved = record.status == dev.haljk.glow.data.TaskRecord.STATUS_UNRETRIEVED
                     GlowCard {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(
                                     when {
                                         done -> "已完成"
+                                        unretrieved -> "结果待取回"
                                         failed -> "没成功"
                                         else -> "进行中"
                                     },
                                     style = MaterialTheme.typography.titleSmall,
-                                    color = if (failed) MaterialTheme.colorScheme.error
-                                    else MaterialTheme.colorScheme.onSurface,
+                                    color = when {
+                                        failed -> MaterialTheme.colorScheme.error
+                                        unretrieved -> MaterialTheme.colorScheme.primary
+                                        else -> MaterialTheme.colorScheme.onSurface
+                                    },
                                 )
                                 Text(
                                     record.summary.ifBlank { record.note.ifBlank { "—" } },
@@ -1294,11 +1337,12 @@ private fun JobQueueScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 2,
                                 )
-                                if (failed && record.message.isNotBlank()) {
+                                if ((failed || unretrieved) && record.message.isNotBlank()) {
                                     Text(
                                         record.message,
                                         style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.error,
+                                        color = if (failed) MaterialTheme.colorScheme.error
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
                                 if (record.referenceFiles.isNotEmpty()) {
@@ -1315,6 +1359,8 @@ private fun JobQueueScreen(
                             val result = record.resultNames.firstOrNull()
                             if (done && result != null) {
                                 TextButton(onClick = { onOpenItem(result) }) { Text("查看") }
+                            } else if (unretrieved) {
+                                TextButton(onClick = { vm.recoverTask(record) }) { Text("继续取回") }
                             }
                         }
                     }
@@ -1322,6 +1368,46 @@ private fun JobQueueScreen(
                 }
                 TextButton(onClick = { JobRegistry.forgetAll(); vm.taskStore.clear() }) { Text("清空记录") }
             }
+        }
+    }
+}
+
+/**
+ * The bar for a task the server still owns but we could not finish collecting.
+ *
+ * Deliberately not styled as an error: nothing failed, the phone lost the connection
+ * (or the process) at the wrong moment, and the task id is on disk. 继续取回 therefore
+ * re-attaches to the very same server-side task instead of paying for a second生成.
+ */
+@Composable
+private fun JobRetrieveBar(
+    snapshot: JobRegistry.Snapshot,
+    onRetrieve: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Text("结果还在服务端，没取回来", style = MaterialTheme.typography.titleSmall)
+        Text(
+            snapshot.message.ifBlank { "任务还在服务端，随时可以取回" },
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = onRetrieve,
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+            ) { Text("继续取回") }
+            Button(
+                onClick = onDismiss,
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+            ) { Text("以后再说") }
         }
     }
 }

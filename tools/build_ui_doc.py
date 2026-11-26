@@ -11,7 +11,9 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 ROOT = Path(r"D:\Texts\00_个人资料\AI Native\20261121 个人多媒体工作台\glow")
-SHOTS = ROOT / "screenshots"
+# The screenshot set belongs to the Android app, so it lives with that app's
+# history rather than beside the plugin's own docs.
+SHOTS = ROOT / "android" / "history" / "screenshots"
 OUT = SHOTS / "阁楼-界面截图说明-v1.1.33.docx"
 
 FONT = "微软雅黑"
@@ -252,7 +254,7 @@ add_body(
 )
 add_body(
     doc,
-    "颜色、字号、间距等样式令牌见 docs/PRODUCT-DESIGN.md 与 "
+    "颜色、字号、间距等样式令牌见 android/DESIGN.md 与 "
     "android/app/src/main/kotlin/dev/haljk/glow/ui/theme/Theme.kt。",
 )
 

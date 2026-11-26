@@ -126,7 +126,7 @@ class ModelClient(
     private fun probeSync(): ProbeResult {
         val request = Request.Builder().url("${settings.imageEndpoint}/health").get().build()
         imageClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return ProbeResult(false, "HTTP ${response.code}")
+            if (!response.isSuccessful) return ProbeResult(false, "没连上（代码 ${response.code}）")
             val body = response.body?.string().orEmpty()
             val model = runCatching { JSONObject(body).optString("model", "") }.getOrDefault("")
             return ProbeResult(true, model.ifEmpty { "已连接" })
@@ -136,9 +136,9 @@ class ModelClient(
     private fun probeQueue(): ProbeResult {
         val request = Request.Builder().url("${settings.imageEndpoint}/health").get().build()
         queueClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return ProbeResult(false, "HTTP ${response.code}")
+            if (!response.isSuccessful) return ProbeResult(false, "没连上（代码 ${response.code}）")
             val root = runCatching { JSONObject(response.body?.string().orEmpty()) }.getOrNull()
-                ?: return ProbeResult(false, "队列返回了无法解析的内容")
+                ?: return ProbeResult(false, "服务返回的内容看不懂")
             val upstream = root.optJSONObject("upstream")
             val upstreamOk = upstream?.optBoolean("ok", true) ?: true
             val depth = root.optJSONObject("queue")
@@ -147,7 +147,7 @@ class ModelClient(
             // A degraded queue still queues; surfacing it as "down" would make the
             // user chase a working service.
             val detail = buildString {
-                append(if (upstreamOk) "队列已连接" else "队列在，但模型机没响应")
+                append(if (upstreamOk) "已连接" else "连上了，但出图的机器没响应")
                 if (queued > 0 || running > 0) append("（进行中 $running，排队 $queued）")
             }
             return ProbeResult(true, detail)
@@ -158,7 +158,7 @@ class ModelClient(
         val request = Request.Builder().url("${settings.llmEndpoint}/health").get().build()
         llmClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                ProbeResult(false, "HTTP ${response.code}")
+                ProbeResult(false, "没连上（代码 ${response.code}）")
             } else {
                 val body = response.body?.string().orEmpty()
                 val model = runCatching { JSONObject(body).optString("model", "") }.getOrDefault("")
@@ -236,12 +236,12 @@ class ModelClient(
         val response = callQueue(request)
         val body = response.body
         val status = response.code
-        if (status == 404) throw QueueGone("队列里查不到这个任务了")
+        if (status == 404) throw QueueGone("服务端查不到这个任务")
         if (status !in 200..299) {
-            val message = describeServiceError(body) ?: "查状态返回 HTTP $status"
+            val message = describeServiceError(body) ?: "查进度时服务返回错误（代码 $status）"
             if (status >= 500) throw QueueRetriable(message) else throw QueueRejected(message)
         }
-        val root = runCatching { JSONObject(body) }.getOrElse { throw QueueRetriable("队列状态不是 JSON") }
+        val root = runCatching { JSONObject(body) }.getOrElse { throw QueueRetriable("服务返回的内容看不懂") }
         return parseState(root)
     }
 
@@ -249,8 +249,8 @@ class ModelClient(
     fun fetchResult(url: String): ByteArray = try {
         val request = Request.Builder().url(url).get().build()
         downloadClient.newCall(request).execute().use { response ->
-            if (response.code == 404) throw QueueGone("结果已过期（队列结果只保留 7 天）")
-            if (!response.isSuccessful) throw QueueRetriable("下载结果失败：HTTP ${response.code}")
+            if (response.code == 404) throw QueueGone("结果已过期（服务端只保留 7 天）")
+            if (!response.isSuccessful) throw QueueRetriable("取图失败（代码 ${response.code}）")
             response.body?.bytes() ?: throw QueueRetriable("下载结果失败：内容为空")
         }
     } catch (error: IOException) {
@@ -272,7 +272,7 @@ class ModelClient(
         val response = callQueue(request)
         if (response.code in 200..299) return true
         if (response.code == 409) return false
-        throw QueueRejected(describeServiceError(response.body) ?: "取消返回 HTTP ${response.code}")
+        throw QueueRejected(describeServiceError(response.body) ?: "取消时服务返回错误（代码 ${response.code}）")
     }
 
     // ------------------------------------------------------------ queue glue
@@ -288,27 +288,27 @@ class ModelClient(
         queueClient.newCall(request).execute().use { response ->
             val text = response.body?.string().orEmpty()
             if (response.code == 429) {
-                throw QueueBusy("队列已满（服务端最多 64 个任务），稍后自动重试", retryAfterMs(response.header("Retry-After")))
+                throw QueueBusy("服务端同时在跑的任务满了，稍后自动重试", retryAfterMs(response.header("Retry-After")))
             }
             if (response.code == 408 || response.code >= 500) {
-                throw QueueRetriable(describeServiceError(text) ?: "队列服务返回 HTTP ${response.code}")
+                throw QueueRetriable(describeServiceError(text) ?: "服务返回错误（代码 ${response.code}）")
             }
             Reply(response.code, text, null)
         }
     } catch (error: IOException) {
-        throw QueueRetriable("连不上队列服务 ${settings.imageEndpoint}：${error.message}", error)
+        throw QueueRetriable("连不上出图服务 ${settings.imageEndpoint}：${error.message}", error)
     }
 
     private fun parseSubmitted(reply: Reply): QueueState {
         if (reply.code !in 200..299) {
             // A 4xx on submit is a parameter problem: the same body fails again.
-            throw QueueRejected(describeServiceError(reply.body) ?: "提交返回 HTTP ${reply.code}")
+            throw QueueRejected(describeServiceError(reply.body) ?: "提交时服务返回错误（代码 ${reply.code}）")
         }
         val root = runCatching { JSONObject(reply.body) }.getOrElse {
-            throw QueueRetriable("队列服务返回了非 JSON 响应")
+            throw QueueRetriable("服务返回的内容看不懂")
         }
         val id = root.optString("id", "")
-        if (id.isEmpty()) throw QueueRetriable("队列服务没有返回任务号，无法跟进")
+        if (id.isEmpty()) throw QueueRetriable("服务端没有给回任务号，没法跟进")
         return parseState(root)
     }
 
@@ -466,7 +466,7 @@ class ModelClient(
     private fun download(url: String): ByteArray = try {
         val request = Request.Builder().url(url).get().build()
         downloadClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw ModelException("下载生成的图片失败（HTTP ${response.code}）")
+            if (!response.isSuccessful) throw ModelException("取图失败（代码 ${response.code}）")
             response.body?.bytes() ?: throw ModelException("下载生成的图片失败（内容为空）")
         }
     } catch (error: IOException) {
@@ -481,8 +481,8 @@ class ModelClient(
         return when {
             code == 422 -> "服务没有接受这个请求：描述不能为空，或尺寸不合法"
             code == 400 -> "请求被拒绝：$reason"
-            code in 500..599 -> "图像服务出错了（HTTP $code）：$reason"
-            else -> "图像服务返回 HTTP $code：$reason"
+            code in 500..599 -> "出图服务出错（代码 $code）：$reason"
+            else -> "出图服务返回错误（代码 $code）：$reason"
         }
     }
 
@@ -517,7 +517,7 @@ class ModelClient(
         val content = try {
             llmClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    throw ModelException("写作助手返回 HTTP ${response.code}")
+                    throw ModelException("写作助手没响应（代码 ${response.code}）")
                 }
                 val body = response.body?.string().orEmpty()
                 runCatching {

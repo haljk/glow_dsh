@@ -24,7 +24,10 @@ data class TaskRecord(
     val remoteId: String = "",
     val createdAt: Long,
     val updatedAt: Long,
-    /** one of [STATUS_QUEUED], [STATUS_RUNNING], [STATUS_DONE], [STATUS_FAILED], [STATUS_CANCELLED]. */
+    /**
+     * one of [STATUS_QUEUED], [STATUS_RUNNING], [STATUS_DONE], [STATUS_FAILED],
+     * [STATUS_CANCELLED], [STATUS_UNRETRIEVED].
+     */
     val status: String,
     val summary: String = "",
     val note: String = "",
@@ -65,6 +68,15 @@ data class TaskRecord(
         const val STATUS_DONE = "done"
         const val STATUS_FAILED = "failed"
         const val STATUS_CANCELLED = "cancelled"
+
+        /**
+         * The client stopped reading progress while the server still owns the task.
+         *
+         * Neither done nor failed: nothing has been produced yet, and nothing has been
+         * refused. Kept distinct so the 任务 list can offer 继续取回 instead of telling
+         * the user the job went wrong when it may well still be running.
+         */
+        const val STATUS_UNRETRIEVED = "unretrieved"
 
         fun decode(json: JSONObject): TaskRecord = TaskRecord(
             id = json.optString("id"),
@@ -133,6 +145,18 @@ class TaskStore(private val directory: File) {
     /** Newest task that produced [resultName], so a result can find its original. */
     fun findByResult(resultName: String): TaskRecord? =
         list(200).firstOrNull { it.resultNames.contains(resultName) }
+
+    /**
+     * Newest record for one server-side task id.
+     *
+     * A restart used to create a fresh record for a task it was resuming, so the same job
+     * showed up once per launch. The task id is the only durable link between our row and
+     * the server's task, which is why it is looked up here before starting anything.
+     */
+    fun findByRemote(remoteId: String): TaskRecord? {
+        if (remoteId.isEmpty()) return null
+        return list(200).firstOrNull { it.remoteId == remoteId }
+    }
 
     /**
      * Copy the reference images next to the task record.

@@ -30,6 +30,7 @@ import dev.haljk.glow.data.ModelException
 import dev.haljk.glow.data.PendingJobStore
 import dev.haljk.glow.data.Settings
 import dev.haljk.glow.data.SettingsStore
+import dev.haljk.glow.data.TaskRecord
 import dev.haljk.glow.data.TaskStore
 import dev.haljk.glow.service.GenerationService
 import kotlinx.coroutines.Dispatchers
@@ -176,6 +177,14 @@ class GlowViewModel(
         refreshGallery()
         probeServices()
         resumePendingJob()
+        // [submitting] used to be cleared only when the workbench screen saw a job end,
+        // so a job that ended while the user stood on 任务 left the flag stuck: 生成图片
+        // did nothing and 继续取回 refused. The registry is the one source of truth.
+        viewModelScope.launch {
+            JobRegistry.current.collect { snapshot ->
+                if (snapshot == null || !snapshot.isActive) submitting = false
+            }
+        }
     }
 
     /**
@@ -183,11 +192,11 @@ class GlowViewModel(
      * thing that went missing is our memory of it. The task id is on disk, so the
      * poll picks up where it stopped instead of paying for a second generation.
      */
-    private fun resumePendingJob() {
-        if (JobRegistry.current.value?.isActive == true) return
+    private fun resumePendingJob(announce: Boolean = false): Boolean {
+        if (JobRegistry.current.value?.isActive == true) return false
         val store = PendingJobStore(getApplication<Application>().filesDir)
-        val pending = store.load() ?: return
-        if (pending.remoteId.isEmpty()) return
+        val pending = store.load() ?: return false
+        if (pending.remoteId.isEmpty()) return false
         val request = JobRequest(
             mode = if (pending.isEdit) JobRequest.MODE_EDIT else JobRequest.MODE_TEXT,
             prompt = pending.prompt,
@@ -205,11 +214,78 @@ class GlowViewModel(
             idempotencyKey = pending.idempotencyKey,
         )
         submitting = true
-        runCatching { GenerationService.start(getApplication(), request) }
-            .onFailure {
-                submitting = false
-                store.clear()
-            }
+        return try {
+            GenerationService.start(getApplication(), request)
+            if (announce) post("正在继续取回，结果一旦跑完就会存进来")
+            true
+        } catch (error: Exception) {
+            submitting = false
+            // The task id stays on disk: a failure to start the service is a local
+            // problem, and throwing the id away would lose a result the server still has.
+            post("没能启动继续取回：${error.message ?: "未知原因"}")
+            false
+        }
+    }
+
+    /**
+     * The 继续取回 action on a task that ended while the result was still on the server.
+     *
+     * Same path as the automatic resume, but reachable by hand: the automatic one only
+     * runs when the app starts, so a job that gave up while the user was looking at the
+     * screen would otherwise wait for the next launch.
+     */
+    fun recoverPending(): Boolean {
+        // Read the registry rather than [submitting]: the flag is only cleared when the
+        // workbench notices a job ending, so a task that ended while the user stood on
+        // 任务 would refuse every 继续取回 for the rest of the session.
+        if (JobRegistry.current.value?.isActive == true) return false
+        if (!resumePendingJob(announce = true)) {
+            post("这次任务的取回信息已经不在了，可能已经被清理")
+            return false
+        }
+        return true
+    }
+
+    /**
+     * 继续取回 for one row in 任务.
+     *
+     * The row is the source of truth here, not the pending file: only one job can be
+     * pending at a time, so a later submit overwrites it and the old row's 继续取回 would
+     * otherwise go and fetch the new task. The task id is on the record, which is enough
+     * to ask the server again.
+     */
+    fun recoverTask(record: TaskRecord): Boolean {
+        if (JobRegistry.current.value?.isActive == true) return true
+        if (record.remoteId.isEmpty()) {
+            post("这条记录没有留下任务号，取不回来了")
+            return false
+        }
+        val request = JobRequest(
+            mode = JobRequest.MODE_TEXT,
+            prompt = record.prompt.ifBlank { record.note },
+            note = record.note,
+            presetId = record.presetId,
+            size = record.size.ifBlank { "1024x1024" },
+            // The record does not keep the seed; the queue returns the real one with the
+            // result, and a resumed job is not regenerated, so an empty seed changes
+            // nothing but the file name.
+            seed = 0L,
+            count = record.count.coerceIn(1, 2),
+            referenceUris = emptyList(),
+            summary = record.summary,
+            resumeRemoteId = record.remoteId,
+            resumeTaskId = record.id,
+            idempotencyKey = "",
+        )
+        return try {
+            GenerationService.start(getApplication(), request)
+            submitting = true
+            post("正在继续取回，结果一旦跑完就会存进来")
+            true
+        } catch (error: Exception) {
+            post("没能启动继续取回：${error.message ?: "未知原因"}")
+            false
+        }
     }
 
     // -------------------------------------------------------------- settings
@@ -309,6 +385,10 @@ class GlowViewModel(
                     refs = refs.map { ReferenceSpec(it.role) },
                     presetId = if (scenario == Scenario.COMBINE) null else presetId,
                     note = note,
+                    // 直发原文 drops the preset sentence, the per-photo role sentence and the
+                    // protection clause: what the user wrote is the whole instruction. The
+                    // photos still go along — they are input, not wording.
+                    raw = settings.rawInstruction,
                 )
                 InstructionComposer.compose(request).prompt
             }
@@ -350,13 +430,18 @@ class GlowViewModel(
     /** Whether pressing the primary action can produce anything. */
     fun canSubmit(): Boolean = when (scenario) {
         Scenario.TEXT -> prompt.isNotBlank()
-        Scenario.RETOUCH -> refs.isNotEmpty() && (presetId != null || prompt.isNotBlank())
-        Scenario.COMBINE -> refs.isNotEmpty()
+        // 直发模式下预设不再提供任何文字，所以「有预设就能提交」不再成立。
+        Scenario.RETOUCH -> refs.isNotEmpty() && (
+            if (settings.rawInstruction) prompt.isNotBlank() else (presetId != null || prompt.isNotBlank())
+            )
+        Scenario.COMBINE -> refs.isNotEmpty() && (!settings.rawInstruction || prompt.isNotBlank())
     }
 
     fun submitBlockedReason(): String? = when {
         scenario == Scenario.TEXT && prompt.isBlank() -> "先写一句描述，或点「帮我写」"
         scenario != Scenario.TEXT && refs.isEmpty() -> "先选一张照片"
+        settings.rawInstruction && scenario != Scenario.TEXT && prompt.isBlank() ->
+            "直发模式下预设不参与，要把要求自己写全"
         scenario == Scenario.RETOUCH && presetId == null && prompt.isBlank() -> "选一个预设，或者写下要改什么"
         else -> null
     }

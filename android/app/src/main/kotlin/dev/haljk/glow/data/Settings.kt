@@ -35,6 +35,12 @@ data class Settings(
     val llmTimeoutSeconds: Int = 180,
     /** Keep the reference-image copies used by the comparison view. */
     val keepReferenceCopies: Boolean = true,
+    /**
+     * Send the user's own wording alone: no preset sentence, no per-photo role sentence
+     * and no protection clause. Off by default, since the assembled instruction is what
+     * a user who does not write model instructions needs.
+     */
+    val rawInstruction: Boolean = false,
 ) {
     val isQueueMode: Boolean get() = imageApiMode == MODE_QUEUE
 
@@ -64,6 +70,7 @@ data class Settings(
         put("imageTimeoutSeconds", imageTimeoutSeconds)
         put("llmTimeoutSeconds", llmTimeoutSeconds)
         put("keepReferenceCopies", keepReferenceCopies)
+        put("rawInstruction", rawInstruction)
     }
 
     companion object {
@@ -101,6 +108,7 @@ data class Settings(
                 imageTimeoutSeconds = migrated.optInt("imageTimeoutSeconds", 900),
                 llmTimeoutSeconds = migrated.optInt("llmTimeoutSeconds", 180),
                 keepReferenceCopies = migrated.optBoolean("keepReferenceCopies", true),
+                rawInstruction = migrated.optBoolean("rawInstruction", false),
             ).normalised()
         }
 

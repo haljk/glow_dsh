@@ -79,6 +79,7 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
     var imageTimeout by remember(current) { mutableStateOf(current.imageTimeoutSeconds.toString()) }
     var llmTimeout by remember(current) { mutableStateOf(current.llmTimeoutSeconds.toString()) }
     var keepRefs by remember(current) { mutableStateOf(current.keepReferenceCopies) }
+    var rawMode by remember(current) { mutableStateOf(current.rawInstruction) }
     var host by remember(current) { mutableStateOf(hostFrom(current.imageBaseUrl)) }
     var advancedOpen by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
@@ -108,6 +109,7 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
         imageTimeoutSeconds = imageTimeout.toIntOrNull() ?: current.imageTimeoutSeconds,
         llmTimeoutSeconds = llmTimeout.toIntOrNull() ?: current.llmTimeoutSeconds,
         keepReferenceCopies = keepRefs,
+        rawInstruction = rawMode,
     )
 
     Scaffold(
@@ -301,6 +303,31 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
                     )
                 }
 
+                // 精修与合成 normally get the preset sentence, one sentence per reference
+                // photo and the protection clause wrapped around what the user wrote.
+                // This switch is for the user who already wrote the whole instruction.
+                GroupTitle("出图指令")
+                GlowCard {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { rawMode = !rawMode }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("直发模式", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "直接发我写的完整指令，不套用模板：不加预设句式、参考图说明和「其他都不要动」这类保真约束",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(checked = rawMode, onCheckedChange = { rawMode = it })
+                    }
+                }
+
                 GroupTitle("本地存储")
                 GlowCard {
                     Row(
@@ -421,6 +448,7 @@ fun SettingsScreen(vm: GlowViewModel, onBack: () -> Unit) {
                     imageTimeout = defaults.imageTimeoutSeconds.toString()
                     llmTimeout = defaults.llmTimeoutSeconds.toString()
                     keepRefs = defaults.keepReferenceCopies
+                    rawMode = defaults.rawInstruction
                     vm.saveSettings(defaults)
                 }) { Text("恢复默认", color = MaterialTheme.colorScheme.error) }
             },
@@ -651,8 +679,7 @@ private fun ProbeRow(
             // "connected" would be a lie about the upstream.
             if (probe != null) {
                 val detail = probe.detail
-                val degraded = probe.ok && detail.isNotBlank() &&
-                    !detail.startsWith("已连接") && !detail.startsWith("队列已连接")
+                val degraded = probe.ok && detail.isNotBlank() && !detail.startsWith("已连接")
                 val second = when {
                     probing -> endpoint
                     degraded -> detail

@@ -28,6 +28,11 @@ data class JobRequest(
      */
     val resumeRemoteId: String = "",
     /**
+     * The task record this resume belongs to, so the new attempt continues the existing
+     * row instead of adding a second one for the same job.
+     */
+    val resumeTaskId: String = "",
+    /**
      * Passed to the queue so a retried submit cannot produce a second image. Empty
      * means "make one up when submitting".
      */
@@ -46,6 +51,7 @@ data class JobRequest(
         put("refUris", JSONArray(referenceUris))
         put("summary", summary)
         put("resumeRemoteId", resumeRemoteId)
+        put("resumeTaskId", resumeTaskId)
         put("idempotencyKey", idempotencyKey)
     }.toString()
 
@@ -67,6 +73,7 @@ data class JobRequest(
                 referenceUris = buildList { for (i in 0 until array.length()) add(array.optString(i)) },
                 summary = json.optString("summary", ""),
                 resumeRemoteId = json.optString("resumeRemoteId", ""),
+                resumeTaskId = json.optString("resumeTaskId", ""),
                 idempotencyKey = json.optString("idempotencyKey", ""),
             )
         }.getOrNull()

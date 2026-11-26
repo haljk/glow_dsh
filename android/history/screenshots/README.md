@@ -56,6 +56,6 @@
 
 ## 复现方式
 
-截图脚本在 `tools/capture-ui*.ps1`，用 uiautomator 定位控件、adb 截图，
-按 `01`→`22` 的顺序驱动同一台模拟器。样式令牌（颜色、字号、间距）在
-`docs/PRODUCT-DESIGN.md` 与 `android/app/src/main/kotlin/dev/haljk/glow/ui/theme/Theme.kt`。
+截图脚本在 `../../../tools/capture-ui*.ps1`，用 uiautomator 定位控件、adb 截图，
+按 `01`→`22` 的顺序驱动同一台模拟器。样式令牌（颜色、字号、间距）以 `../../DESIGN.md` 的
+「界面规范」一节与 `android/app/src/main/kotlin/dev/haljk/glow/ui/theme/Theme.kt` 为准。

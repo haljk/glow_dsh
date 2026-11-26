@@ -15,14 +15,23 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
+  "scripts": {
+    "check": "node --check index.js && node --check client.js",
+    "test": "node tools/check-glow.mjs",
+    "test:e2e": "node tools/check-edit-verbatim.mjs",
+    "verify": "node --check index.js && node --check client.js && node tools/check-glow.mjs && node tools/check-edit-verbatim.mjs"
+  },
   "files": [
     "index.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
     "docs",
+    "tools",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "DESIGN.md",
+    "VERIFICATION.md"
   ],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },

@@ -22,7 +22,7 @@
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import http from 'node:http'
 import https from 'node:https'
@@ -50,9 +50,15 @@ const DEFAULTS = {
   llmModel: 'default_model',
   outputDir: '',
   routePrefix: '/api/glow',
-  /** How long one job may take end to end, queue wait included. */
+  /**
+   * How long one direct (`sync`) generation request may stay open. It is *not*
+   * a budget for a queued task: the queue owns the wait, so a queued job is
+   * followed until the service reports a final state, however long that takes.
+   */
   imageTimeoutMs: 1800000,
   llmTimeoutMs: 180000,
+  /** Keep the reference photos beside each result, so "before / after" survives. */
+  keepReferenceCopies: true,
 }
 
 /** User settings live outside the repository, so they are never committed. */
@@ -71,11 +77,13 @@ const EDITABLE_FIELDS = [
   'outputDir',
   'imageTimeoutMs',
   'llmTimeoutMs',
+  'keepReferenceCopies',
 ]
 
 /**
- * Queue client policy. Every request is short; the only long wait is the
- * business deadline (`imageTimeoutMs`), checked between polls.
+ * Queue client policy. Every request is short and a queued task has no total
+ * time limit: what ends a queued job is the service's final state, or a failure
+ * count high enough to prove the connection — not the clock.
  */
 const QUEUE = {
   /** The service polls its own worker every 3 s; 4 s keeps us from queueing up. */
@@ -86,8 +94,14 @@ const QUEUE = {
   /** Our own concurrency cap — the service allows 64, but one app must not fill it. */
   maxPending: 20,
   maxSubmitAttempts: 6,
-  /** ~80 s of unreadable status before giving up, so a blip is not fatal. */
-  maxStatusFailures: 20,
+  /**
+   * Consecutive unreadable status reads — at 4 s apart, ~3 min — before we stop
+   * following a task. This budget is about the connection, not about the task
+   * being too slow. The same number also bounds how many times a finished image
+   * may fail to download (see `markSucceeded`), because both are the same
+   * question: "is this link still alive?"
+   */
+  maxStatusFailures: 45,
   defaultRetryAfterMs: 30000,
   retentionDays: 7,
 }
@@ -118,9 +132,10 @@ function resolveSettings(input, base = DEFAULTS) {
   const model = String(source.llmModel === undefined ? base.llmModel : source.llmModel).trim()
   resolved.llmModel = model || base.llmModel
   if (source.outputDir !== undefined) resolved.outputDir = String(source.outputDir || '').trim()
-  // A business deadline has to outlast one queued 2K edit, so the floor is 1 min.
+  // Only a direct request has a deadline; a queued task waits as long as it must.
   resolved.imageTimeoutMs = clampInt(source.imageTimeoutMs, 60000, 7200000, base.imageTimeoutMs)
   resolved.llmTimeoutMs = clampInt(source.llmTimeoutMs, 10000, 600000, base.llmTimeoutMs)
+  resolved.keepReferenceCopies = toBool(source.keepReferenceCopies, base.keepReferenceCopies !== false)
   return resolved
 }
 
@@ -128,6 +143,21 @@ function resolveMode(value, fallback) {
   if (value === undefined || value === null || value === '') return fallback
   if (value === 'queue' || value === 'sync') return value
   throw new HttpError(400, `服务模式只能是 queue 或 sync（收到 "${value}"）`)
+}
+
+/**
+ * A checkbox arrives as a real boolean, a hand-edited settings file may hold
+ * `"false"`, and an untouched field is absent — all three must resolve the same
+ * way, otherwise `"false"` would read as true and quietly keep copying files.
+ */
+function toBool(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value !== 0
+  const text = String(value).trim().toLowerCase()
+  if (text === 'true' || text === '1' || text === 'yes' || text === 'on') return true
+  if (text === 'false' || text === '0' || text === 'no' || text === 'off') return false
+  return fallback
 }
 
 /**
@@ -170,6 +200,39 @@ const IMAGE_LIMITS = {
 const MAX_BODY_BYTES = 96 * 1024 * 1024
 const MEDIA_TYPES = { '.png': 'image/png', '.json': 'application/json; charset=utf-8' }
 const JOB_HISTORY_LIMIT = 40
+
+/**
+ * Job statuses that are endings. `canceled` is a task the user stopped while the
+ * service still could; `abandoned` is one that ran to the end but whose result
+ * the user asked not to keep. Both are finished, neither is a failure.
+ */
+const TERMINAL_STATUSES = new Set(['done', 'failed', 'canceled', 'abandoned'])
+
+/** How many finished task records are kept on disk before the oldest goes. */
+const TASK_RECORD_LIMIT = 200
+
+/**
+ * `~/.glow/tasks/<id>.json` is one finished task, and `~/.glow/tasks/<id>/` holds
+ * that task's own reference photos. Both live outside the output directory: the
+ * gallery is the user's pictures, this is the plugin's own bookkeeping.
+ */
+const TASKS_DIR = path.join(SETTINGS_DIR, 'tasks')
+
+function isTerminalStatus(status) {
+  return TERMINAL_STATUSES.has(String(status || ''))
+}
+
+/**
+ * A job id becomes a file name, so it is checked instead of trusted. The ids
+ * this plugin mints (`job-<base36>-<random>`) pass; anything else -- `..`,
+ * a slash, a drive letter -- is rejected before it reaches `path.join`.
+ */
+const TASK_ID_PATTERN = /^[a-z0-9-]{6,64}$/i
+
+function safeTaskId(value) {
+  const raw = String(value === undefined || value === null ? '' : value).trim()
+  return TASK_ID_PATTERN.test(raw) ? raw : ''
+}
 
 /** Reusable prompts the user keeps around; a small cap keeps the list scannable. */
 const FAVORITES_FILE = 'favorites.json'
@@ -367,6 +430,118 @@ const PRESETS = [
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+// ------------------------------------------------------------- edit prompts
+
+function presetById(id) {
+  if (!id) return null
+  const found = PRESETS.find((preset) => preset.id === id)
+  if (!found) throw new HttpError(400, `未知的预设：${id}`)
+  return found
+}
+
+/**
+ * Build the instruction sent to the model from friendly inputs: what each
+ * reference is for, which preset was picked, and the user's own note.
+ *
+ * A reference whose role is missing or unknown falls back to "composition and
+ * camera" -- the reading that keeps the photo recognisable -- and never to
+ * "detail", which would let the model redraw fine detail it was not asked to.
+ */
+/**
+ * The panel sends a boolean, and the body may arrive from a hand-written caller
+ * that sends "true". One reading for both routes, so /preview and /edit can
+ * never disagree about whether the switch is on.
+ */
+function isSwitchOn(value) {
+  return value === true || value === 'true'
+}
+
+/** Drop anything that is not a reference object, so one bad entry cannot 500. */
+function usableRefs(list) {
+  return (Array.isArray(list) ? list : []).filter((ref) => ref && typeof ref === 'object')
+}
+
+/**
+ * Turn what people actually type into the token the service binds images with.
+ * "图1" and "第2张" both mean <Picture 1> / <Picture 2>. A number pointing past
+ * the attached images is left exactly as written -- inventing a reference the
+ * model cannot see would be worse than leaving the sentence alone.
+ *
+ * The lookbehind keeps words that merely contain 图 intact: 地图1 / 示意图2 /
+ * 流程图1 are descriptions, not image references. A blacklist rather than a
+ * whitelist of introducers on purpose: guessing wrong here costs one oddly
+ * worded word, while the reverse mistake would silently stop binding an image.
+ *
+ * This is notation, not a template: it never adds words of its own.
+ */
+function bindPictureTokens(text, count) {
+  const toToken = (whole, digits) => {
+    const n = Number(digits)
+    return n >= 1 && n <= count ? `<Picture ${n}>` : whole
+  }
+  return String(text)
+    .replace(/(?<![地示意蓝试视构版草程工型果线系度通想面平])图\s*(\d{1,2})/g, toToken)
+    .replace(/第\s*(\d{1,2})\s*张/g, toToken)
+}
+
+function composeEditPrompt(input) {
+  const preset = presetById(input.presetId)
+  const refs = usableRefs(input.refs)
+  const note = String(input.note || '').trim()
+
+  if (refs.length === 0) throw new HttpError(400, '请先添加至少一张参考图')
+  if (refs.length > IMAGE_LIMITS.maxReferences) {
+    throw new HttpError(400, `参考图最多 ${IMAGE_LIMITS.maxReferences} 张`)
+  }
+  const roles = refs.map((ref) => (ROLE_SENTENCE[ref.role] ? ref.role : 'scene'))
+
+  // Verbatim: the user wrote the whole instruction and asked us to send it as
+  // written. No preset line, no role sentence, no frozen list -- adding any of
+  // them here would be exactly the thing the switch exists to turn off.
+  if (isSwitchOn(input.verbatim)) {
+    const source = input.prompt === undefined || input.prompt === null ? note : input.prompt
+    const own = String(source).trim()
+    if (!own) throw new HttpError(400, '直接发送时要先写下完整指令')
+    return {
+      prompt: bindPictureTokens(own, refs.length),
+      presetId: '',
+      references: refs.length,
+      roles,
+      verbatim: true,
+    }
+  }
+
+  if (preset) {
+    const missing = preset.needs.filter((role) => !roles.includes(role))
+    if (missing.length > 0) {
+      const names = missing.map((role) => (ROLES.find((r) => r.id === role) || { label: role }).label)
+      throw new HttpError(400, `「${preset.label}」还需要指定：${names.join('、')}`)
+    }
+  }
+
+  const parts = []
+  if (preset) parts.push(preset.instruction)
+  roles.forEach((role, index) => {
+    parts.push(ROLE_SENTENCE[role](index + 1, preset ? preset.mayChange : []))
+  })
+  if (note) parts.push(`另外，${note}`)
+
+  const touchesSubject = roles.includes('subject')
+  if (preset || touchesSubject) {
+    // The freeze list is derived from the preset, so it never contradicts the
+    // instruction above it.
+    const clause = buildPreserveClause(preset ? preset.mayChange : [])
+    if (clause) parts.push(clause)
+  }
+
+  return {
+    prompt: parts.join('；') + '。',
+    presetId: preset ? preset.id : '',
+    references: refs.length,
+    roles,
+  }
+}
+
 function defaultOutputDir() {
   return path.join(os.homedir(), 'Pictures', 'glow')
 }
@@ -423,14 +598,36 @@ function snapEdge(value, maxEdge) {
 
 function normalizeSize(input, allow4k = false) {
   const maxEdge = allow4k ? IMAGE_LIMITS.maxEdgeWith4k : IMAGE_LIMITS.maxEdge
-  const raw = String(input || '').trim()
+  // Two shapes are legitimate: the panel sends "1024x1024", and a caller that
+  // already works in pixels (a probe, a check) may hand over width and height.
+  let raw = ''
+  if (input && typeof input === 'object') {
+    const width = Number(input.width)
+    const height = Number(input.height)
+    if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+      raw = `${Math.round(width)}x${Math.round(height)}`
+    }
+  } else {
+    raw = String(input || '').trim()
+  }
   if (!raw) return { size: '1024x1024', width: 1024, height: 1024, adjusted: false }
   const match = /^(\d+)\s*[x×*]\s*(\d+)$/i.exec(raw)
   if (!match) {
     throw new HttpError(400, `尺寸格式应为 宽x高，例如 1024x1024（收到 "${raw}"）`)
   }
-  const width = snapEdge(match[1], maxEdge)
-  const height = snapEdge(match[2], maxEdge)
+  let askWidth = Number(match[1])
+  let askHeight = Number(match[2])
+  // Clamp proportionally first. Clamping each edge on its own would turn a
+  // 3024x4032 photo into a square, and the stored picture would come back
+  // visibly stretched — the user asked for a shape, not for two numbers.
+  const longest = Math.max(askWidth, askHeight)
+  if (longest > maxEdge) {
+    const scale = maxEdge / longest
+    askWidth = askWidth * scale
+    askHeight = askHeight * scale
+  }
+  const width = snapEdge(askWidth, maxEdge)
+  const height = snapEdge(askHeight, maxEdge)
   const adjusted = String(width) !== match[1] || String(height) !== match[2]
   return { size: `${width}x${height}`, width, height, adjusted }
 }
@@ -641,6 +838,7 @@ export function apply(ctx, config) {
         outputDir: cfg.outputDir,
         imageTimeoutMs: cfg.imageTimeoutMs,
         llmTimeoutMs: cfg.llmTimeoutMs,
+        keepReferenceCopies: cfg.keepReferenceCopies,
       },
       defaults: {
         imageApiMode: DEFAULTS.imageApiMode,
@@ -650,6 +848,7 @@ export function apply(ctx, config) {
         llmModel: DEFAULTS.llmModel,
         imageTimeoutMs: DEFAULTS.imageTimeoutMs,
         llmTimeoutMs: DEFAULTS.llmTimeoutMs,
+        keepReferenceCopies: DEFAULTS.keepReferenceCopies,
       },
       editable: EDITABLE_FIELDS,
       stored: { path: SETTINGS_FILE, overrides: stored },
@@ -705,8 +904,10 @@ export function apply(ctx, config) {
 
     // Keep a copy of what the user fed in, so "before / after" still works
     // from the gallery after a reload — the page no longer holds those photos.
+    // The task directory already holds a copy, so this is the copy the user may
+    // switch off without losing what they fed in.
     const refFiles = []
-    if (Array.isArray(item.refImages)) {
+    if (cfg.keepReferenceCopies !== false && Array.isArray(item.refImages)) {
       for (let index = 0; index < item.refImages.length; index++) {
         const refName = name.replace(/\.png$/, `.ref-${index + 1}.png`)
         try {
@@ -731,6 +932,10 @@ export function apply(ctx, config) {
       seconds: item.seconds ?? null,
       references: item.references ?? 0,
       presetId: item.presetId || '',
+      // Remembered so "reuse this one" refills the switch too. Without it, a
+      // verbatim instruction would come back as a note and get wrapped in the
+      // template it was written to avoid.
+      verbatim: item.verbatim === true,
       refFiles,
       // The queue's own id, so a stored image can be traced back to a task.
       queueJobId: item.queueJobId || '',
@@ -984,6 +1189,7 @@ export function apply(ctx, config) {
           seconds: item.seconds,
           references: item.references ?? request.references ?? 0,
           presetId: request.presetId,
+          verbatim: request.verbatim === true,
           note: request.note,
           refImages: request.refImages,
           queueJobId: request.queueJobId,
@@ -1139,6 +1345,7 @@ export function apply(ctx, config) {
           seconds: entry.seconds ?? (Number(state.seconds) || undefined),
           references: job.request.references ?? 0,
           presetId: job.request.presetId,
+          verbatim: job.request.verbatim === true,
           note: job.request.note,
           refImages: job.refImages,
           queueJobId: job.remoteId,
@@ -1154,61 +1361,6 @@ export function apply(ctx, config) {
       engine: state.kind ? `image-job-queue · ${state.kind}` : 'image-job-queue',
       model: state.model,
       steps: IMAGE_LIMITS.steps,
-    }
-  }
-
-  // ------------------------------------------------------------- edit prompts
-
-  function presetById(id) {
-    if (!id) return null
-    const found = PRESETS.find((preset) => preset.id === id)
-    if (!found) throw new HttpError(400, `未知的预设：${id}`)
-    return found
-  }
-
-  /**
-   * Build the instruction sent to the model from friendly inputs: what each
-   * reference is for, which preset was picked, and the user's own note.
-   */
-  function composeEditPrompt(input) {
-    const preset = presetById(input.presetId)
-    const refs = Array.isArray(input.refs) ? input.refs : []
-    const note = String(input.note || '').trim()
-
-    if (refs.length === 0) throw new HttpError(400, '请先添加至少一张参考图')
-    if (refs.length > IMAGE_LIMITS.maxReferences) {
-      throw new HttpError(400, `参考图最多 ${IMAGE_LIMITS.maxReferences} 张`)
-    }
-    const roles = refs.map((ref) => (ROLE_SENTENCE[ref.role] ? ref.role : 'detail'))
-
-    if (preset) {
-      const missing = preset.needs.filter((role) => !roles.includes(role))
-      if (missing.length > 0) {
-        const names = missing.map((role) => (ROLES.find((r) => r.id === role) || { label: role }).label)
-        throw new HttpError(400, `「${preset.label}」还需要指定：${names.join('、')}`)
-      }
-    }
-
-    const parts = []
-    if (preset) parts.push(preset.instruction)
-    roles.forEach((role, index) => {
-      parts.push(ROLE_SENTENCE[role](index + 1, preset ? preset.mayChange : []))
-    })
-    if (note) parts.push(`另外，${note}`)
-
-    const touchesSubject = roles.includes('subject')
-    if (preset || touchesSubject) {
-      // The freeze list is derived from the preset, so it never contradicts the
-      // instruction above it.
-      const clause = buildPreserveClause(preset ? preset.mayChange : [])
-      if (clause) parts.push(clause)
-    }
-
-    return {
-      prompt: parts.join('；') + '。',
-      presetId: preset ? preset.id : '',
-      references: refs.length,
-      roles,
     }
   }
 
@@ -1230,8 +1382,21 @@ export function apply(ctx, config) {
     return activeJobs().filter((job) => Boolean(job.remoteId))
   }
 
+  /**
+   * Only a direct request has a deadline: one HTTP call is held open for the
+   * whole generation, so it needs an upper bound. A queued task is followed
+   * until the service reports a final state, however long the queue keeps it —
+   * the wait is the queue's to bound, not ours, and a slow queue is not a
+   * failure. `imageTimeoutMs` therefore means "one direct request", nothing more.
+   */
   function deadlineExceeded(job) {
+    if (!isBlockingJob(job)) return false
     return Date.now() - job.createdAt > cfg.imageTimeoutMs
+  }
+
+  /** A job that talks to the blocking service, where one request is the whole wait. */
+  function isBlockingJob(job) {
+    return Boolean(job.blocking) || Boolean(job.submit && job.submit.kind === 'sync')
   }
 
   function timeoutNote() {
@@ -1243,7 +1408,24 @@ export function apply(ctx, config) {
     job.error = error || ''
     job.finishedAt = Date.now()
     job.submit = null
+    // Every ending goes through here, so this is the one place a task record
+    // has to be written down.
+    void persistTaskRecord(job)
     pruneJobs()
+  }
+
+  /** Finished tasks whose reference copies this task keeps on disk. */
+  function taskRefUrls(job) {
+    const id = safeTaskId(job.id)
+    const files = Array.isArray(job.taskRefFiles) ? job.taskRefFiles : []
+    if (!id || files.length === 0) return []
+    const urls = []
+    for (const name of files) {
+      const match = /^ref-(\d+)\.png$/.exec(String(name))
+      if (!match) continue
+      urls.push(`${cfg.routePrefix}/taskref/${encodeURIComponent(id)}/${match[1]}`)
+    }
+    return urls
   }
 
   /**
@@ -1270,8 +1452,13 @@ export function apply(ctx, config) {
       etaSeconds: job.etaSeconds || 0,
       remoteId: job.remoteId || '',
       remoteStatus: job.remoteStatus || '',
-      note: job.note || '',
+      // `refNote` outlives the poller's own progress text, so a reference copy
+      // that could not be written stays visible instead of blinking away.
+      note: job.note || job.refNote || '',
       canceled: Boolean(job.canceled),
+      // Cancelled too late to stop it: the work still runs, the result is dropped.
+      discardOnDone: Boolean(job.discardOnDone),
+      refUrls: taskRefUrls(job),
       mode: cfg.imageApiMode,
       request: job.request,
       items: job.items || [],
@@ -1280,18 +1467,24 @@ export function apply(ctx, config) {
     }
   }
 
+  /**
+   * Keep the memory-side history at its cap. Only the in-memory entry goes: the
+   * task record on disk still points at its reference copies, so deleting them
+   * here would leave a readable history entry with dead images.
+   */
   function pruneJobs() {
     const finished = [...jobs.values()]
-      .filter((job) => job.status === 'done' || job.status === 'failed')
+      .filter((job) => isTerminalStatus(job.status))
       .sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0))
     for (const stale of finished.slice(JOB_HISTORY_LIMIT)) jobs.delete(stale.id)
   }
 
   /**
-   * Only unfinished queue jobs are written down: a finished one lives in the
-   * gallery, and a blocking one cannot be resumed anyway (its response is gone).
-   * Writes are serialised and go through a temp file, because two overlapping
-   * snapshots or a half-written file would both corrupt the restart state.
+   * Only unfinished queue jobs are written down here: a finished one has its own
+   * record under `~/.glow/tasks/`, and a blocking one cannot be resumed anyway
+   * (its response is gone). Writes are serialised and go through a temp file,
+   * because two overlapping snapshots or a half-written file would both corrupt
+   * the restart state.
    */
   let persistChain = Promise.resolve()
 
@@ -1312,6 +1505,13 @@ export function apply(ctx, config) {
           request: job.request,
           remoteId: job.remoteId || '',
           idemKey: job.idemKey || '',
+          // A cancel that was too late must survive a restart, otherwise the
+          // resumed job would download and keep exactly the image the user
+          // asked us to throw away.
+          cancelRequested: Boolean(job.cancelRequested),
+          discardOnDone: Boolean(job.discardOnDone),
+          // Small reference copies are known by name; the bytes stay on disk.
+          taskRefFiles: Array.isArray(job.taskRefFiles) ? job.taskRefFiles : [],
           // A submit body is kept only when it is small (JSON, no images).
           submit:
             job.submit && job.submit.persist
@@ -1359,6 +1559,9 @@ export function apply(ctx, config) {
         request: saved.request && typeof saved.request === 'object' ? saved.request : {},
         remoteId,
         idemKey: saved.idemKey ? String(saved.idemKey) : '',
+        cancelRequested: Boolean(saved.cancelRequested),
+        discardOnDone: Boolean(saved.discardOnDone),
+        taskRefFiles: Array.isArray(saved.taskRefFiles) ? saved.taskRefFiles : [],
       }
       if (saved.submit && typeof saved.submit.body === 'string') {
         job.submit = {
@@ -1370,9 +1573,10 @@ export function apply(ctx, config) {
         }
       }
       if (!job.remoteId && !job.submit) {
-        job.status = 'failed'
-        job.error = 'DSH 上次关闭时这次请求还没提交，请重新发起'
-        job.finishedAt = Date.now()
+        // Nothing left to resume: this one ends here, and it ends on the record.
+        jobs.set(job.id, job)
+        finishJob(job, 'failed', 'DSH 上次关闭时这次请求还没提交，请重新发起')
+        continue
       }
       if (job.remoteId) {
         job.note = '接着上次的进度继续等'
@@ -1392,20 +1596,257 @@ export function apply(ctx, config) {
     throw new Error(describeServiceError(res.body.toString('utf8')) || `取消返回 HTTP ${res.status}`)
   }
 
+  // ------------------------------------------------------------ task records
+
+  /** One durable record per finished task, so the panel survives a restart. */
+  function buildTaskRecord(job) {
+    const request = job.request && typeof job.request === 'object' ? job.request : {}
+    const items = Array.isArray(job.items) ? job.items : []
+    return {
+      id: job.id,
+      kind: job.kind,
+      label: job.label || '',
+      createdAt: job.createdAt || 0,
+      finishedAt: job.finishedAt || Date.now(),
+      status: job.status,
+      prompt: String(request.prompt || ''),
+      presetId: String(request.presetId || ''),
+      size: String(request.size || ''),
+      count: Number(request.batch) || items.length || 1,
+      error: job.error || '',
+      resultNames: items.map((item) => String(item && item.name ? item.name : '')).filter(Boolean),
+      referenceFiles: Array.isArray(job.taskRefFiles) ? job.taskRefFiles.slice() : [],
+      remoteId: job.remoteId || '',
+      percent: Number.isFinite(job.percent) ? job.percent : 0,
+    }
+  }
+
+  /**
+   * Writes are serialised and go through a temp file, for the same reason
+   * `persistJobs` does: a half-written record would come back as a corrupt
+   * history entry after a crash.
+   */
+  let taskRecordChain = Promise.resolve()
+
+  /**
+   * The records are read once and then kept in step by writes and removals. The
+   * panel asks for the job list every couple of seconds, so re-reading up to 200
+   * files each time would be a lot of pointless disk work.
+   */
+  let taskRecordCache = null
+
+  function rememberTaskRecord(record) {
+    if (!taskRecordCache) return
+    const id = String(record.id || '')
+    taskRecordCache = taskRecordCache.filter((entry) => String(entry.id || '') !== id)
+    taskRecordCache.push(record)
+    taskRecordCache.sort((a, b) => (Number(b.finishedAt) || 0) - (Number(a.finishedAt) || 0))
+    if (taskRecordCache.length > TASK_RECORD_LIMIT) {
+      taskRecordCache = taskRecordCache.slice(0, TASK_RECORD_LIMIT)
+    }
+  }
+
+  function forgetTaskRecord(id) {
+    if (!taskRecordCache) return
+    taskRecordCache = taskRecordCache.filter((entry) => String(entry.id || '') !== String(id || ''))
+  }
+
+  function persistTaskRecord(job) {
+    if (!isTerminalStatus(job.status)) return Promise.resolve()
+    const id = safeTaskId(job.id)
+    if (!id) return Promise.resolve()
+    const target = path.join(TASKS_DIR, `${id}.json`)
+    const record = buildTaskRecord(job)
+    const run = async () => {
+      try {
+        await mkdir(TASKS_DIR, { recursive: true })
+        await writeFile(`${target}.tmp`, JSON.stringify(record, null, 2), 'utf8')
+        await rename(`${target}.tmp`, target)
+      } catch {
+        /* history is a convenience; it must never break a generation */
+        return
+      }
+      rememberTaskRecord(record)
+      await pruneTaskRecords()
+    }
+    taskRecordChain = taskRecordChain.then(run, run)
+    return taskRecordChain
+  }
+
+  /** Record file names on disk, already filtered to shapes we wrote ourselves. */
+  async function taskRecordNames() {
+    try {
+      const names = await readdir(TASKS_DIR)
+      return names.filter((name) => /^[a-z0-9-]{6,64}\.json$/i.test(name))
+    } catch {
+      return []
+    }
+  }
+
+  /** Read every record once, newest first. */
+  async function readTaskRecords() {
+    const names = await taskRecordNames()
+    if (names.length === 0) return []
+    const records = []
+    for (const name of names) {
+      try {
+        const parsed = JSON.parse(await readFile(path.join(TASKS_DIR, name), 'utf8'))
+        if (!parsed || typeof parsed !== 'object') continue
+        if (!isTerminalStatus(parsed.status)) continue
+        records.push(parsed)
+      } catch {
+        /* one unreadable record must not hide the rest of the history */
+      }
+    }
+    records.sort((a, b) => (Number(b.finishedAt) || 0) - (Number(a.finishedAt) || 0))
+    return records
+  }
+
+  /** Finished tasks known to disk, newest first. Read once, then cached. */
+  async function loadTaskRecords(limit = JOB_HISTORY_LIMIT) {
+    if (!taskRecordCache) taskRecordCache = await readTaskRecords()
+    return taskRecordCache.slice(0, limit)
+  }
+
+  /** A task's reference copies; its own directory, so nothing else can match. */
+  function taskDirPath(jobId) {
+    const id = safeTaskId(jobId)
+    if (!id) return ''
+    return path.join(TASKS_DIR, id)
+  }
+
+  /** Drop one record plus the reference copies that belong to it. */
+  async function removeTaskFiles(jobId, recordName) {
+    const id = safeTaskId(jobId)
+    if (id) {
+      forgetTaskRecord(id)
+      try {
+        await rm(taskDirPath(id), { recursive: true, force: true })
+      } catch {
+        /* already gone, or not ours to remove */
+      }
+    }
+    if (recordName && /^[a-z0-9-]{6,64}\.json$/i.test(String(recordName))) {
+      try {
+        await unlink(path.join(TASKS_DIR, String(recordName)))
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+
+  /** Above the cap, the oldest finished tasks go first. */
+  async function pruneTaskRecords() {
+    const names = await taskRecordNames()
+    if (names.length <= TASK_RECORD_LIMIT) return
+    const records = []
+    for (const name of names) {
+      const id = name.replace(/\.json$/, '')
+      try {
+        const parsed = JSON.parse(await readFile(path.join(TASKS_DIR, name), 'utf8'))
+        records.push({ name, id, finishedAt: Number(parsed && parsed.finishedAt) || 0 })
+      } catch {
+        // An unreadable record has no timestamp to defend it, so it goes first.
+        records.push({ name, id, finishedAt: 0 })
+      }
+    }
+    records.sort((a, b) => a.finishedAt - b.finishedAt)
+    for (const stale of records.slice(0, records.length - TASK_RECORD_LIMIT)) {
+      await removeTaskFiles(stale.id, stale.name)
+    }
+  }
+
+  /** A disk record as the panel sees a job; its images are already in the gallery. */
+  function viewFromTaskRecord(record) {
+    const items = Array.isArray(record.resultNames) ? record.resultNames : []
+    return {
+      id: String(record.id || ''),
+      kind: record.kind === 'image2image' ? 'image2image' : 'text2image',
+      status: isTerminalStatus(record.status) ? record.status : 'failed',
+      label: String(record.label || ''),
+      createdAt: Number(record.createdAt) || 0,
+      startedAt: null,
+      finishedAt: Number(record.finishedAt) || null,
+      elapsedSeconds: 0,
+      waitedSeconds: 0,
+      queuePosition: 0,
+      percent: Number(record.percent) || 0,
+      etaSeconds: 0,
+      remoteId: String(record.remoteId || ''),
+      remoteStatus: '',
+      note: '',
+      canceled: record.status === 'canceled' || record.status === 'abandoned',
+      discardOnDone: record.status === 'abandoned',
+      refUrls: (Array.isArray(record.referenceFiles) ? record.referenceFiles : [])
+        .map((name) => /^ref-(\d+)\.png$/.exec(String(name)))
+        .filter(Boolean)
+        .map((match) => `${cfg.routePrefix}/taskref/${encodeURIComponent(String(record.id))}/${match[1]}`),
+      mode: cfg.imageApiMode,
+      request: {
+        mode: record.kind,
+        prompt: String(record.prompt || ''),
+        size: String(record.size || ''),
+        presetId: String(record.presetId || ''),
+        batch: Number(record.count) || 1,
+      },
+      items: items.map((name) => ({
+        name,
+        prompt: String(record.prompt || ''),
+        presetId: String(record.presetId || ''),
+        size: String(record.size || ''),
+        fileUrl: `${cfg.routePrefix}/file/${encodeURIComponent(name)}`,
+      })),
+      error: String(record.error || ''),
+      savedTo: outputDir,
+    }
+  }
+
+  /**
+   * The last few finished tasks, newest first. Memory forgets them at the cap
+   * and on restart, so the on-disk records are merged in and de-duplicated by
+   * id — a task the process still remembers is described from memory, which
+   * carries the live fields a record does not.
+   */
+  async function recentJobs(limit = JOB_HISTORY_LIMIT) {
+    const seen = new Set()
+    const merged = []
+    const fromMemory = [...jobs.values()]
+      .filter((job) => isTerminalStatus(job.status))
+      .sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0))
+    for (const job of fromMemory) {
+      seen.add(job.id)
+      merged.push(jobView(job))
+    }
+    for (const record of await loadTaskRecords(limit)) {
+      if (seen.has(record.id)) continue
+      seen.add(record.id)
+      merged.push(viewFromTaskRecord(record))
+    }
+    merged.sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0))
+    return merged.slice(0, limit)
+  }
+
   /**
    * Convert a finished queue task into gallery entries. A failed download is
    * retried on later ticks: the image exists, so throwing it away over one bad
    * read would waste the whole run.
    */
   async function markSucceeded(job, state) {
+    // Cancelled after the service had already started: the result exists, but
+    // the user asked for it not to be kept, so nothing is downloaded or written.
+    if (job.discardOnDone) {
+      job.percent = 100
+      return finishJob(job, 'abandoned', '按你的要求，这次结果不保存')
+    }
     try {
       const result = await collectQueueItems(job, state)
       job.items = result.items
       job.savedTo = result.savedTo
       job.percent = 100
-      job.status = 'done'
     } catch (error) {
       job.downloadFailures = (job.downloadFailures || 0) + 1
+      // The same count bounds a download retry: both questions are "is the link
+      // still there?", and neither should end a task that simply needs time.
       if (error.gone || job.downloadFailures >= QUEUE.maxStatusFailures) {
         return finishJob(job, 'failed', error.message || '下载结果失败')
       }
@@ -1414,10 +1855,8 @@ export function apply(ctx, config) {
       job.note = `图已经生成好，取图没成功（第 ${job.downloadFailures} 次），稍后重试`
       return undefined
     }
-    job.finishedAt = Date.now()
-    job.submit = null
     job.note = ''
-    pruneJobs()
+    finishJob(job, 'done', '')
     return undefined
   }
 
@@ -1430,8 +1869,15 @@ export function apply(ctx, config) {
     } catch (error) {
       if (error.gone) return finishJob(job, 'failed', `队列里查不到这个任务了：${error.message}`)
       job.statusFailures = (job.statusFailures || 0) + 1
+      // This is a connection budget, not a task deadline: the task itself is
+      // fine, we just cannot see it, and 45 unreadable reads in a row are not a
+      // blip.
       if (job.statusFailures >= QUEUE.maxStatusFailures) {
-        return finishJob(job, 'failed', `一直读不到任务进度：${error.message}`)
+        return finishJob(
+          job,
+          'failed',
+          `一直读不到任务进度（已连续 ${QUEUE.maxStatusFailures} 次），像是连接出了问题：${error.message}`,
+        )
       }
       job.note = `暂时读不到任务进度（第 ${job.statusFailures} 次），继续试`
       return undefined
@@ -1448,14 +1894,18 @@ export function apply(ctx, config) {
     if (status === 'failed') {
       return finishJob(job, 'failed', state.error ? String(state.error) : '这次没成功，换个描述再试一次')
     }
-    if (status === 'canceled') return finishJob(job, 'failed', '任务已取消')
+    // The service ended the task itself, which is a cancellation, not a failure.
+    if (status === 'canceled') return finishJob(job, 'canceled', '已取消')
     job.status = status === 'running' ? 'running' : 'queued'
     if (job.status === 'running' && !job.startedAt) job.startedAt = Date.now()
     job.note = ''
     return undefined
   }
 
-  /** The deadline passed: stop following the task and free its slot. */
+  /**
+   * The direct call ran out of time. Only `sync` mode gets here: a queued task
+   * has no deadline to exceed, so it is never abandoned on the clock.
+   */
   async function abandonJob(job) {
     if (job.remoteId && job.remoteStatus !== 'running') {
       try {
@@ -1478,6 +1928,8 @@ export function apply(ctx, config) {
         job.note = `本地最多同时跟进 ${QUEUE.maxPending} 个任务，等前面的完成`
         continue
       }
+      // A queued task has no deadline to miss: this can only stop a direct call,
+      // which never reaches `pendingJobs`. Kept so the rule lives in one place.
       if (deadlineExceeded(job)) {
         finishJob(job, 'failed', timeoutNote())
         continue
@@ -1496,14 +1948,21 @@ export function apply(ctx, config) {
         // The user may have cancelled while this request was in flight; the
         // queue already owns the task, so cancel it there as well.
         if (job.cancelRequested) {
+          let stopped = false
           try {
-            await cancelQueueJob(job.remoteId)
+            stopped = await cancelQueueJob(job.remoteId)
           } catch {
             /* the local cancel already happened; nothing else to do */
           }
+          if (stopped) {
+            job.canceled = true
+            finishJob(job, 'canceled', '已取消')
+            continue
+          }
+          // The service had already started it, so there is nothing to stop.
+          // Keep following it only to learn when the result can be thrown away.
           job.canceled = true
-          finishJob(job, 'failed', '已取消')
-          continue
+          job.discardOnDone = true
         }
         void persistJobs()
       } catch (error) {
@@ -1536,20 +1995,21 @@ export function apply(ctx, config) {
     try {
       const response = await postImageService(job.submit.path, { body: job.submit.body, headers: job.submit.headers }, cfg.imageTimeoutMs)
       if (job.cancelRequested) {
-        // The generation already ran, but the user asked not to keep it.
+        // A blocking call cannot be interrupted, so the image was generated
+        // anyway; the user asked for it not to be kept, which is its own end.
         job.canceled = true
-        finishJob(job, 'failed', '已取消（这张图已经生成，未保存）')
+        job.discardOnDone = true
+        finishJob(job, 'abandoned', '按你的要求，这次结果不保存')
         return
       }
       const result = await collectItems(response, job.submit.request)
       job.items = result.items
       job.savedTo = result.savedTo
-      job.status = 'done'
+      finishJob(job, 'done', '')
     } catch (error) {
-      job.status = 'failed'
-      job.error = error.message || '生成失败'
+      finishJob(job, 'failed', error.message || '生成失败')
     } finally {
-      job.finishedAt = Date.now()
+      job.finishedAt = job.finishedAt || Date.now()
       job.blocking = false
       job.submit = null
       pruneJobs()
@@ -1559,9 +2019,9 @@ export function apply(ctx, config) {
 
   /**
    * One tick: read back what the queue owns, then submit what it may take.
-   * Status reads run concurrently so one slow answer cannot stall the rest, and
-   * a job that finished while the deadline passed is still collected — the
-   * work is done on the model host, throwing it away helps nobody.
+   * Status reads run concurrently so one slow answer cannot stall the rest. A
+   * queued task is never dropped on the clock — only a direct call has a
+   * deadline, and those do not appear here because the queue does not own them.
    */
   async function tick() {
     if (ticking) return
@@ -1657,16 +2117,27 @@ export function apply(ctx, config) {
   }
 
   async function runEdit(body) {
-    const refs = Array.isArray(body?.refs) ? body.refs : []
+    const refs = usableRefs(body?.refs)
     const freeform = String(body?.prompt || '').trim()
     const noteText = String(body?.note || '').trim()
+    const verbatim = isSwitchOn(body?.verbatim)
 
     let composed
-    if (freeform && refs.length === 0) throw new HttpError(400, '图生图至少需要 1 张参考图')
-    if (freeform && body?.presetId === undefined && !body?.note) {
+    if (verbatim) {
+      // Whatever the user typed goes out untouched; the switch on the panel is
+      // the only thing that sets this, so there is no template to argue with.
+      composed = composeEditPrompt({
+        refs,
+        prompt: body?.prompt,
+        note: body?.note,
+        verbatim: true,
+      })
+    } else if (freeform && refs.length === 0) {
+      throw new HttpError(400, '图生图至少需要 1 张参考图')
+    } else if (freeform && body?.presetId === undefined && !body?.note) {
       // Advanced path: the caller already wrote the whole instruction.
       if (refs.length === 0) throw new HttpError(400, '图生图至少需要 1 张参考图')
-      composed = { prompt: freeform, presetId: '', references: refs.length, roles: refs.map((r) => r.role || 'detail') }
+      composed = { prompt: freeform, presetId: '', references: refs.length, roles: refs.map((r) => r.role || 'scene') }
     } else {
       if (!body?.presetId && !noteText) {
         // Without either, the composition is "keep everything as it is", which
@@ -1694,8 +2165,9 @@ export function apply(ctx, config) {
       label: (preset ? preset.label + ' · ' : '') + composed.prompt.slice(0, 36),
       createdAt: Date.now(),
       idemKey,
-      // Reference bytes are held in memory only; an edit that was never submitted
-      // cannot be rebuilt after a restart, and that is said out loud then.
+      // The bytes stay in memory for the gallery copies, and are written to
+      // `~/.glow/tasks/<id>/` before the submit below, so the comparison copy
+      // outlives a reload even when the result never arrives.
       refImages: images,
       request: {
         mode: 'image2image',
@@ -1705,6 +2177,7 @@ export function apply(ctx, config) {
         batch: 1,
         seed: seed ?? null,
         presetId: composed.presetId,
+        verbatim: composed.verbatim === true,
         references: images.length,
         roles: composed.roles,
       },
@@ -1745,12 +2218,55 @@ export function apply(ctx, config) {
           size: bounds.size,
           references: images.length,
           presetId: composed.presetId,
+          // Same fields the queued branch carries: the blocking path also ends
+          // up in saveItem, and dropping `verbatim` here meant a direct-mode
+          // result came back templated when the user hit "reuse this one".
+          verbatim: composed.verbatim === true,
+          roles: composed.roles,
           note: noteText,
           refImages: images,
         },
       }
     }
+
+    // Write the references down before submitting, so a cancel, a failure or a
+    // restart still leaves the user something to compare against — the page no
+    // longer holds those photos, and an abandoned result has no gallery entry.
+    const stored = await saveTaskReferences(id, images)
+    job.taskRefFiles = stored.files
+    // Kept apart from `note`, which the poller clears as soon as it has news.
+    job.refNote = stored.note
     return enqueueJob(job)
+  }
+
+  /**
+   * One copy of every reference under `~/.glow/tasks/<id>/`. A write failure is
+   * a note in the panel, never a reason to refuse the edit: the image this job
+   * produces is worth more than the comparison copy beside it.
+   */
+  async function saveTaskReferences(jobId, images) {
+    const dir = taskDirPath(jobId)
+    const files = []
+    if (!dir || !Array.isArray(images) || images.length === 0) return { files, note: '' }
+    try {
+      await mkdir(dir, { recursive: true })
+    } catch (error) {
+      return { files, note: `参考图副本没能存下来（不影响出图）：${error.message}` }
+    }
+    let failure = ''
+    for (let index = 0; index < images.length; index++) {
+      const name = `ref-${index + 1}.png`
+      try {
+        await writeFile(path.join(dir, name), images[index].bytes)
+        files.push(name)
+      } catch (error) {
+        failure = error.message
+      }
+    }
+    return {
+      files,
+      note: failure ? `参考图副本没能全部存下来（不影响出图）：${failure}` : '',
+    }
   }
 
   // ----------------------------------------------------------- prompt assist
@@ -1938,6 +2454,37 @@ export function apply(ctx, config) {
   }
 
   /**
+   * A reference copy that belongs to one task, so a cancelled or failed edit can
+   * still be shown next to what it was made from. This must not become a second
+   * read hole: it lives behind the same Host and same-origin checks as `file/`
+   * (it is dispatched from inside them), and neither the id nor the number is
+   * ever joined into a path before both are checked against a pattern.
+   */
+  async function handleTaskRef(req, res, rest) {
+    const match = /^([a-z0-9-]{6,64})\/(\d{1,2})$/.exec(String(rest || ''))
+    if (!match) throw new HttpError(400, '参考图地址不合法')
+    const id = safeTaskId(match[1])
+    const index = Number(match[2])
+    if (!id || !Number.isInteger(index) || index < 1 || index > IMAGE_LIMITS.maxReferences) {
+      throw new HttpError(400, '参考图地址不合法')
+    }
+    const dir = taskDirPath(id)
+    if (!dir) throw new HttpError(400, '参考图地址不合法')
+    let bytes
+    try {
+      bytes = await readFile(path.join(dir, `ref-${index}.png`))
+    } catch {
+      throw new HttpError(404, '参考图不存在或已被清理')
+    }
+    res.writeHead(200, {
+      'content-type': 'image/png',
+      'content-length': bytes.length,
+      'cache-control': 'private, max-age=3600',
+    })
+    res.end(req.method === 'HEAD' ? undefined : bytes)
+  }
+
+  /**
    * Hosts this route accepts. Without this check the read endpoints are open to
    * DNS rebinding: a hostile page whose domain resolves to 127.0.0.1 sends
    * `Host: evil.example`, which the browser still counts as same-origin, so the
@@ -2068,10 +2615,9 @@ export function apply(ctx, config) {
       if (sub === 'jobs') {
         const all = [...jobs.values()].sort((a, b) => b.createdAt - a.createdAt)
         const active = all.filter((job) => job.status === 'queued' || job.status === 'running')
-        const finished = all.filter((job) => job.status === 'done' || job.status === 'failed')
         sendJson(res, 200, {
           active: active.map(jobView),
-          recent: finished.slice(0, 40).map(jobView),
+          recent: await recentJobs(),
           running: activeJobs().length > 0,
           queueLength: pendingJobs().length,
           mode: cfg.imageApiMode,
@@ -2090,6 +2636,10 @@ export function apply(ctx, config) {
           lastBusyNote,
           lastQueueError,
         })
+        return
+      }
+      if (sub.startsWith('taskref/')) {
+        await handleTaskRef(req, res, sub.slice('taskref/'.length))
         return
       }
       if (sub.startsWith('file/')) {
@@ -2171,30 +2721,40 @@ export function apply(ctx, config) {
       }
       if (sub === 'jobs/clear') {
         for (const job of [...jobs.values()]) {
-          if (job.status === 'done' || job.status === 'failed') jobs.delete(job.id)
+          if (isTerminalStatus(job.status)) jobs.delete(job.id)
         }
-        sendJson(res, 200, { cleared: true })
+        // The history and its reference copies both go; the pictures in the
+        // output directory are the user's and stay untouched.
+        const records = await taskRecordNames()
+        for (const name of records) {
+          await removeTaskFiles(name.replace(/\.json$/, ''), name)
+        }
+        sendJson(res, 200, { cleared: true, records: records.length })
         return
       }
       if (sub === 'jobs/cancel') {
         const body = await readJsonBody(req)
         const job = jobs.get(String(body?.id || ''))
         if (!job) throw new HttpError(404, '任务不存在或已被清理')
-        if (job.status === 'done' || job.status === 'failed') {
+        if (isTerminalStatus(job.status)) {
           sendJson(res, 200, { job: jobView(job), canceled: false, reason: '这个任务已经结束了' })
           return
         }
         // Set before the first await: a submit already in flight re-checks this.
         job.cancelRequested = true
         if (job.blocking) {
-          // A blocking call cannot be interrupted; the result is dropped instead.
-          sendJson(res, 200, { job: jobView(job), canceled: true, reason: '已经开跑，做完不保存' })
+          // A blocking call cannot be interrupted, so the generation runs to the
+          // end and only the saving is dropped. That is not a failure and not an
+          // error: it is a result the user asked us not to keep.
+          job.discardOnDone = true
+          job.canceled = true
+          sendJson(res, 200, { job: jobView(job), canceled: false, reason: '已经开跑，做完不保存' })
           return
         }
         if (!job.remoteId) {
           // Never submitted: dropping it locally is a complete cancel.
           job.canceled = true
-          finishJob(job, 'failed', '已取消（还没提交到队列）')
+          finishJob(job, 'canceled', '已取消（还没提交到队列）')
           void persistJobs()
           sendJson(res, 200, { job: jobView(job), canceled: true })
           return
@@ -2207,12 +2767,17 @@ export function apply(ctx, config) {
           throw new HttpError(502, `取消没成功：${error.message}`)
         }
         if (!canceled) {
-          // The service cannot interrupt a generation that already started.
-          job.cancelRequested = false
-          throw new HttpError(409, '已经开始生成了，只能等它跑完（服务端不支持中断）')
+          // The service cannot interrupt a generation that already started, and
+          // that is not an error: the task keeps running, the result is thrown
+          // away when it lands, and the user is told exactly that.
+          job.discardOnDone = true
+          job.canceled = true
+          void persistJobs()
+          sendJson(res, 200, { job: jobView(job), canceled: false, reason: '已经开跑，做完不保存' })
+          return
         }
         job.canceled = true
-        finishJob(job, 'failed', '已取消')
+        finishJob(job, 'canceled', '已取消')
         void persistJobs()
         sendJson(res, 200, { job: jobView(job), canceled: true })
         return
@@ -2344,4 +2909,23 @@ export function apply(ctx, config) {
       }),
     'glow: http routes',
   )
+}
+
+/**
+ * Read-only handles for the regression script: presets, the frozen list, the
+ * role sentences, size snapping and settings migration are all pure, so an
+ * external check can assert on them without a running plugin context.
+ */
+export const __test = {
+  PRESETS,
+  ROLES,
+  PRESERVE_ITEMS,
+  buildPreserveClause,
+  buildSubjectSentence,
+  bindPictureTokens,
+  normalizeSize,
+  snapEdge,
+  resolveSettings,
+  migrateSettings,
+  composeEditPrompt,
 }

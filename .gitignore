@@ -11,6 +11,8 @@ settings.json
 Thumbs.db
 *.log
 *.swp
+__pycache__/
+*.pyc
 
 # Android
 android/.gradle/

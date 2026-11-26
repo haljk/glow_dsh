@@ -264,7 +264,7 @@ app/src/main/java/dev/haljk/glow/
 
 路径含中文会让 AGP 的测试工作进程读不到类路径，因此构建在
 `C:\glow-build\android` 的镜像副本上进行，由 `tools/build-android.ps1` 自动完成。
-细节见 [../android/BUILD-NOTES.md](../android/BUILD-NOTES.md)。
+当时另有一份构建笔记记录镜像细节，该文件已不在仓库里。
 
 ---
 

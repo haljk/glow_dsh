@@ -32,6 +32,7 @@ import dev.haljk.glow.data.QueueState
 import dev.haljk.glow.data.RefImage
 import dev.haljk.glow.data.Settings
 import dev.haljk.glow.data.SettingsStore
+import dev.haljk.glow.data.TaskStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -72,6 +73,19 @@ class GenerationService : Service() {
         }
 
         createChannel()
+        // A resume must continue the row that already exists. The record is the only
+        // durable link to the server's task, so it is looked up by task id first; an id the
+        // caller passed wins, because it read the same disk and may know better.
+        // The registry's store is shared, but the service can be started with no screen
+        // alive, so this reads the same directory directly when it has to.
+        val existingTaskId = if (request.resumeRemoteId.isEmpty()) {
+            ""
+        } else {
+            request.resumeTaskId.ifEmpty {
+                val taskStore = JobRegistry.tasks ?: TaskStore(File(filesDir, TASKS_DIR))
+                taskStore.findByRemote(request.resumeRemoteId)?.id.orEmpty()
+            }
+        }
         JobRegistry.start(
         id = "t-${request.seed}-${System.currentTimeMillis()}",
         summary = request.summary,
@@ -79,6 +93,8 @@ class GenerationService : Service() {
         note = request.note,
         prompt = request.prompt,
         size = request.size,
+        existingTaskId = existingTaskId,
+        remoteId = request.resumeRemoteId,
     )
         if (request.resumeRemoteId.isNotEmpty()) {
             // The queue never lost the task; this process did.
@@ -95,9 +111,9 @@ class GenerationService : Service() {
                 JobRegistry.fail(error.message ?: "生成失败")
                 notifyFinal("生成失败", error.message ?: "生成失败")
             } catch (error: QueueRejected) {
-                Log.w(TAG, "queue rejected: ${error.message}", error)
-                JobRegistry.fail(error.message ?: "队列拒绝了这次请求")
-                notifyFinal("生成失败", error.message ?: "队列拒绝了这次请求")
+                Log.w(TAG, "server rejected the request: ${error.message}", error)
+                JobRegistry.fail(error.message ?: "服务端没有接这次请求")
+                notifyFinal("生成失败", error.message ?: "服务端没有接这次请求")
             } catch (error: Exception) {
                 Log.w(TAG, "generation crashed: ${error.message}", error)
                 JobRegistry.fail(error.message ?: "生成失败")
@@ -160,7 +176,10 @@ class GenerationService : Service() {
         val references = readReferences(request)
 
         var remoteId = request.resumeRemoteId
-        var discardResult = false
+        // True once the server refused to cancel. It ends the waiting, not the job: the
+        // result still arrives, and throwing it away was the defect. Latched so the
+        // server is asked to cancel once, not on every poll.
+        var stoppedWaiting = false
 
         if (remoteId.isEmpty()) {
             if (request.isEdit) updateProgress("正在提交精修任务…") else updateProgress("正在提交…")
@@ -190,15 +209,27 @@ class GenerationService : Service() {
         // while the model was still working, which is the worst of both worlds.
         var statusFailures = 0
         while (true) {
-            if (JobRegistry.cancelRequested) {
+            if (JobRegistry.cancelRequested && !stoppedWaiting) {
                 val accepted = runCatching { client.cancelJob(remoteId) }.getOrDefault(false)
                 if (accepted) {
                     store.clear()
                     throw ModelException("已取消，模型还没开始")
                 }
-                // 409 means it is already generating; the model cannot be interrupted.
-                discardResult = true
-                JobRegistry.stage(JobRegistry.Stage.RUNNING, message = "已经开跑，做完不保存")
+                // The server says the model is already working and cannot be stopped.
+                // Only the interactive wait ends here — the task is still ours, so it is
+                // followed to the end and the image is saved. Dropping it here is what
+                // made the user say we lost track of the server's progress.
+                stoppedWaiting = true
+                // Pass the last known progress through: stage() defaults to zero, and a bar
+                // dropping to 0% right after "cancel" reads as if the work restarted.
+                val known = JobRegistry.current.value
+                JobRegistry.stage(
+                    JobRegistry.Stage.RUNNING,
+                    percent = known?.percent ?: 0,
+                    etaSeconds = known?.etaSeconds ?: 0,
+                    message = STOPPED_WAITING,
+                )
+                updateProgress(STOPPED_WAITING)
             }
 
             delay(POLL_INTERVAL_MS)
@@ -208,16 +239,33 @@ class GenerationService : Service() {
                 statusFailures = 0
                 read
             } catch (gone: QueueGone) {
+                // The server looked and answered: this task does not exist for it. That is
+                // a real failure and the pending file is what must not survive it.
                 store.clear()
-                throw ModelException("队列里查不到这个任务了（可能已被清理）")
+                throw ModelException("服务端没有这个任务了（可能已被清理，或结果已过期）")
             } catch (retriable: QueueRetriable) {
                 statusFailures++
                 if (statusFailures >= MAX_STATUS_FAILURES) {
-                    store.clear()
-                    throw ModelException("连续 ${MAX_STATUS_FAILURES} 次读不到任务进度，先停在这里：${retriable.message}")
+                    // The connection went away; the task did not. Deleting the pending file
+                    // here was the bug — the server went on producing an image nobody could
+                    // claim afterwards. Keep it, say so plainly, and let 继续取回 finish it.
+                    val message = "现在连不上服务，任务还在服务端。回到应用点『继续取回』"
+                    // The id stays in the log, not in the sentence: a support case can still
+                    // find the task, and the user is not asked to read a machine name.
+                    Log.w(TAG, "status unreadable $statusFailures times, task id $remoteId: ${retriable.message}")
+                    JobRegistry.unretrieved(message)
+                    notifyFinal("暂时取不回来", message)
+                    // Ends the service normally rather than throwing: the outer catch would
+                    // overwrite the stage with a plain failure, which is not what happened.
+                    return
                 }
+                // Keep the last known stage and progress: a failed read is no news, so it
+                // must not look like the job slid back to 0%.
+                val known = JobRegistry.current.value
                 JobRegistry.stage(
-                    JobRegistry.current.value?.stage ?: JobRegistry.Stage.QUEUED,
+                    known?.stage ?: JobRegistry.Stage.QUEUED,
+                    percent = known?.percent ?: 0,
+                    etaSeconds = known?.etaSeconds ?: 0,
                     message = "暂时读不到进度（第 $statusFailures 次），继续试",
                 )
                 updateProgress("暂时读不到进度，继续试（第 $statusFailures 次）")
@@ -240,29 +288,37 @@ class GenerationService : Service() {
                         JobRegistry.Stage.RUNNING,
                         percent = state.percent,
                         etaSeconds = state.etaSeconds,
+                        message = if (stoppedWaiting) STOPPED_WAITING else "",
                     )
-                    updateProgress("正在生成，约 ${state.percent}%")
+                    updateProgress(
+                        if (stoppedWaiting) "正在生成，约 ${state.percent}%，跑完会自动保存"
+                        else "正在生成，约 ${state.percent}%",
+                    )
                 }
 
                 QueueState.STATUS_SUCCEEDED -> {
                     JobRegistry.stage(JobRegistry.Stage.FETCHING, percent = 99, message = "正在取图…")
                     updateProgress("图好了，正在取回…")
-                    if (discardResult) {
-                        store.clear()
-                        throw ModelException("已放弃这次结果，模型那边已经跑完了")
-                    }
                     val items = state.data.ifEmpty { fallbackItems(remoteId, request) }
-                    val producedNames = saveImages(
-                        request = request,
-                        settings = settings,
-                        startedAt = startedAt,
-                        items = items,
-                        load = { client.fetchResult(items[it].url) },
-                        queueJobId = remoteId,
-                        referenceBytes = references.map { it.bytes },
-                    )
+                    val producedNames = try {
+                        saveImages(
+                            request = request,
+                            settings = settings,
+                            startedAt = startedAt,
+                            items = items,
+                            load = { client.fetchResult(items[it].url) },
+                            queueJobId = remoteId,
+                            referenceBytes = references.map { it.bytes },
+                        )
+                    } catch (gone: QueueGone) {
+                        // Second time the server answers with "gone", and this one is final:
+                        // the result expired, so keeping the pending file would make every
+                        // launch retry a download that can never succeed.
+                        store.clear()
+                        throw ModelException("结果在服务端已经过期，取不回来了（最多保留 7 天）")
+                    }
                     store.clear()
-                    finishWith(request, producedNames.size, producedNames)
+                    finishWith(request, producedNames.size, producedNames, stoppedWaiting)
                     return
                 }
 
@@ -300,15 +356,21 @@ class GenerationService : Service() {
                 } else {
                     client.submitTextToImage(request.prompt, request.size, request.count, request.seed, idempotencyKey)
                 }
-                if (state.id.isEmpty()) throw QueueRetriable("队列没有返回任务号")
+                if (state.id.isEmpty()) throw QueueRetriable("服务端没有返回任务号")
                 return state.id
             } catch (busy: QueueBusy) {
-                if (attempt >= MAX_SUBMIT_ATTEMPTS) throw ModelException("队列一直满（${busy.message}）")
-                updateProgress("队列已满，${busy.retryAfterMs / 1000} 秒后重试（第 $attempt 次）")
+                if (attempt >= MAX_SUBMIT_ATTEMPTS) {
+                    Log.w(TAG, "server stayed busy: ${busy.message}")
+                    throw ModelException("服务端一直很忙，换个时间再试")
+                }
+                updateProgress("服务端正忙，${busy.retryAfterMs / 1000} 秒后重试（第 $attempt 次）")
                 delay(busy.retryAfterMs)
             } catch (retriable: QueueRetriable) {
                 if (attempt >= MAX_SUBMIT_ATTEMPTS) {
-                    throw ModelException("提交失败：${retriable.message}")
+                    // The transport detail goes to the log; the user gets a sentence they
+                    // can act on instead of the service's own wording.
+                    Log.w(TAG, "submit gave up: ${retriable.message}")
+                    throw ModelException("没能提交到服务端，稍后再试")
                 }
                 val backoff = (1000L * attempt * attempt).coerceAtMost(15_000L)
                 updateProgress("提交没成功，${backoff / 1000} 秒后重试（第 $attempt 次）")
@@ -359,6 +421,11 @@ class GenerationService : Service() {
         items.forEachIndexed { index, item ->
             val bytes = try {
                 load(index)
+            } catch (gone: QueueGone) {
+                // Passed through untouched: a result the server says no longer exists is
+                // handled differently from a download that merely failed, and turning it
+                // into a generic failure here would hide the difference from the caller.
+                throw gone
             } catch (error: Exception) {
                 throw ModelException("图已经生成好，取图没成功：${error.message}")
             }
@@ -400,11 +467,26 @@ class GenerationService : Service() {
         return savedNames
     }
 
-    private fun finishWith(request: JobRequest, produced: Int, resultNames: List<String> = emptyList()) {
+    /**
+     * [stoppedWaiting] is set when the user cancelled and the server was already working:
+     * the final message has to say the result arrived anyway, because that is exactly
+     * what the user was told would happen.
+     */
+    private fun finishWith(
+        request: JobRequest,
+        produced: Int,
+        resultNames: List<String> = emptyList(),
+        stoppedWaiting: Boolean = false,
+    ) {
         JobRegistry.finish(produced, resultNames)
         val verb = if (request.isEdit) "精修" else "生成"
         Log.i(TAG, "generation done: $produced image(s)")
-        notifyFinal("${verb}完成", "已保存 $produced 张，回到阁楼查看")
+        val text = if (stoppedWaiting) {
+            "已停止等待，结果已保存 $produced 张，回到阁楼查看"
+        } else {
+            "已保存 $produced 张，回到阁楼查看"
+        }
+        notifyFinal("${verb}完成", text)
     }
 
     /** "排队中（前面还有 2 个）" — the wait is real, so say why. */
@@ -537,14 +619,20 @@ class GenerationService : Service() {
         private const val FINAL_NOTIFICATION_ID = 1002
         private const val EXTRA_REQUEST = "request"
 
+        /** Where the task records live; the screen reads the same directory. */
+        private const val TASKS_DIR = "tasks"
+
+        /** Shown while a cancelled wait keeps running, so the promise stays visible. */
+        private const val STOPPED_WAITING = "已停止等待，跑完会自动保存"
+
         /** The service polls its own worker every 3 s; 4 s keeps us from queueing up. */
         const val POLL_INTERVAL_MS = 4000L
 
-        /** ~80 s of unreadable status before giving up, so a blip is not fatal. */
-        // Consecutive unreadable polls, not elapsed time: 45 x 4s ≈ 3 minutes of a service that
-    // will not answer. A dropped Wi-Fi frame or a server restart should not kill a job that
-    // is still alive on the other side.
-    private const val MAX_STATUS_FAILURES = 45
+        // Consecutive unreadable polls, not elapsed time: 45 x 4s ≈ 3 minutes of a service
+        // that will not answer. A dropped Wi-Fi frame or a server restart should not stop a
+        // job that is still alive on the other side — and reaching this limit no longer
+        // means the job is lost, only that this phone stops watching it.
+        private const val MAX_STATUS_FAILURES = 45
 
         private const val MAX_SUBMIT_ATTEMPTS = 6
 
