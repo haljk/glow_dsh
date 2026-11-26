@@ -87,7 +87,7 @@ const EDITABLE_FIELDS = [
  */
 const QUEUE = {
   /** The service polls its own worker every 3 s; 4 s keeps us from queueing up. */
-  pollIntervalMs: 4000,
+  pollIntervalMs: envInt('GLOW_POLL_MS', 4000),
   submitTimeoutMs: 30000,
   statusTimeoutMs: 20000,
   resultTimeoutMs: 180000,
@@ -97,13 +97,28 @@ const QUEUE = {
   /**
    * Consecutive unreadable status reads — at 4 s apart, ~3 min — before we stop
    * following a task. This budget is about the connection, not about the task
-   * being too slow. The same number also bounds how many times a finished image
-   * may fail to download (see `markSucceeded`), because both are the same
-   * question: "is this link still alive?"
+   * being too slow. Hitting it is not an ending for the task: the record keeps
+   * the queue's own id, and `继续取回` asks again later.
+   *
+   * The same number also bounds how many times a finished image may fail to
+   * download (see `markSucceeded`), because both are the same question: "is this
+   * link still alive?"
    */
-  maxStatusFailures: 45,
+  maxStatusFailures: envInt('GLOW_STATUS_FAILURES', 45),
   defaultRetryAfterMs: 30000,
   retentionDays: 7,
+}
+
+/**
+ * The two knobs above can be overridden from the environment so the checks in
+ * `tools/` can drive the slow paths — 45 unreadable reads, 4 s apart — in a
+ * couple of seconds. Both are unset in normal runs, where the values above are
+ * the ones that ship. The floor matters: a stray `GLOW_POLL_MS=1` on someone's
+ * machine would turn the poller into a request flood.
+ */
+function envInt(name, fallback, floor = 50) {
+  const raw = Number(process.env[name])
+  return Number.isFinite(raw) && raw >= floor ? Math.floor(raw) : fallback
 }
 
 function normalizeServiceUrl(value, fallback) {
@@ -206,7 +221,7 @@ const JOB_HISTORY_LIMIT = 40
  * service still could; `abandoned` is one that ran to the end but whose result
  * the user asked not to keep. Both are finished, neither is a failure.
  */
-const TERMINAL_STATUSES = new Set(['done', 'failed', 'canceled', 'abandoned'])
+const TERMINAL_STATUSES = new Set(['done', 'failed', 'canceled', 'abandoned', 'unretrieved'])
 
 /** How many finished task records are kept on disk before the oldest goes. */
 const TASK_RECORD_LIMIT = 200
@@ -1456,8 +1471,12 @@ export function apply(ctx, config) {
       // that could not be written stays visible instead of blinking away.
       note: job.note || job.refNote || '',
       canceled: Boolean(job.canceled),
-      // Cancelled too late to stop it: the work still runs, the result is dropped.
-      discardOnDone: Boolean(job.discardOnDone),
+      // Cancelled too late to stop it: the wait is over, but the task still runs
+      // and its result is still saved. The panel says so instead of hiding it.
+      stoppedWaiting: Boolean(job.stoppedWaiting || job.cancelRequested),
+      // Result is still on the server and this plugin stopped watching: the panel
+      // offers 继续取回, which works because the task id survived.
+      resumable: job.status === 'unretrieved' && Boolean(job.remoteId),
       refUrls: taskRefUrls(job),
       mode: cfg.imageApiMode,
       request: job.request,
@@ -1505,11 +1524,10 @@ export function apply(ctx, config) {
           request: job.request,
           remoteId: job.remoteId || '',
           idemKey: job.idemKey || '',
-          // A cancel that was too late must survive a restart, otherwise the
-          // resumed job would download and keep exactly the image the user
-          // asked us to throw away.
-          cancelRequested: Boolean(job.cancelRequested),
-          discardOnDone: Boolean(job.discardOnDone),
+          // A cancel that was too late must survive a restart, so the resumed job
+          // keeps following the task instead of pretending nothing happened.
+          cancelRequested: Boolean(job.cancelRequested || job.stoppedWaiting),
+          stoppedWaiting: Boolean(job.stoppedWaiting || job.cancelRequested),
           // Small reference copies are known by name; the bytes stay on disk.
           taskRefFiles: Array.isArray(job.taskRefFiles) ? job.taskRefFiles : [],
           // A submit body is kept only when it is small (JSON, no images).
@@ -1560,7 +1578,10 @@ export function apply(ctx, config) {
         remoteId,
         idemKey: saved.idemKey ? String(saved.idemKey) : '',
         cancelRequested: Boolean(saved.cancelRequested),
-        discardOnDone: Boolean(saved.discardOnDone),
+        // `discardOnDone` was the old "throw the finished image away" flag. Its
+        // meaning is gone; a job saved under it is simply one whose wait ended,
+        // and the result is kept like any other.
+        stoppedWaiting: Boolean(saved.stoppedWaiting || saved.discardOnDone || saved.cancelRequested),
         taskRefFiles: Array.isArray(saved.taskRefFiles) ? saved.taskRefFiles : [],
       }
       if (saved.submit && typeof saved.submit.body === 'string') {
@@ -1756,6 +1777,123 @@ export function apply(ctx, config) {
     }
   }
 
+  /**
+   * Put a task the plugin stopped watching back under watch.
+   *
+   * Two callers: the panel's 继续取回 button, and the startup pass that picks up
+   * records left in `unretrieved`. The task id is the only thing needed — the
+   * queue still owns the work, so we ask it again instead of generating anew.
+   *
+   * Only a task whose result is still out there is worth resuming. A finished one
+   * already has its image in the gallery, and resuming it would download the same
+   * picture a second time.
+   *
+   * The disk record is deliberately **left alone**: it still points at this task's
+   * reference copies, and deleting it here would take those copies with it — the
+   * one thing that lets the comparison view work after a recovery. `recentJobs`
+   * hides a record while its task is being followed, and the record is rewritten
+   * when the task ends, so nothing is shown twice and nothing dangles.
+   *
+   * Returns `{ job }` on success, or `{ reason }` when it cannot be resumed.
+   */
+  async function resumeJob(jobId) {
+    const id = safeTaskId(jobId)
+    if (!id) return { reason: '这条记录没有留下可用的任务号，取不回来了', missing: true }
+
+    const known = jobs.get(id)
+    const record = known ? null : (await loadTaskRecords(TASK_RECORD_LIMIT)).find((entry) => entry.id === id)
+    if (!known && !record) return { reason: '找不到这条任务记录', missing: true }
+    const remoteId = String((known && known.remoteId) || (record && record.remoteId) || '')
+    if (!remoteId) {
+      return {
+        reason: known ? '这条任务没有提交到队列，没有可取的编号' : '这条记录没有留下可用的任务号，取不回来了',
+      }
+    }
+    // Already under watch: say so, instead of claiming the id is missing.
+    if (known && !isTerminalStatus(known.status)) return { job: jobView(known), already: true }
+    const twin = [...jobs.values()].find(
+      (job) => job.id !== id && job.remoteId === remoteId && !isTerminalStatus(job.status),
+    )
+    if (twin) return { job: jobView(twin), already: true }
+
+    const status = String((known && known.status) || (record && record.status) || '')
+    const hasResult = Boolean(known && Array.isArray(known.items) && known.items.length > 0)
+    if (status === 'done' || hasResult) {
+      return { reason: '这条任务已经做完了，图就在作品里' }
+    }
+    if (status === 'canceled') {
+      return { reason: '这条任务在排队阶段就被取消了，模型没有开始跑，没有可取的图' }
+    }
+    if (status !== 'unretrieved' && status !== 'failed') {
+      return { reason: '这条任务的状态不需要取回' }
+    }
+
+    const request = known && known.request ? known.request : record ? taskRecordRequest(record) : {}
+    const job = known || {
+      id,
+      kind: record && record.kind === 'image2image' ? 'image2image' : 'text2image',
+      label: (record && record.label) || '',
+      createdAt: Number(record && record.createdAt) || Date.now(),
+      request,
+      taskRefFiles: Array.isArray(record && record.referenceFiles) ? record.referenceFiles.slice() : [],
+    }
+
+    job.status = 'queued'
+    job.remoteId = remoteId
+    job.remoteStatus = ''
+    job.error = ''
+    job.finishedAt = 0
+    job.statusFailures = 0
+    job.downloadFailures = 0
+    job.attempts = 0
+    job.notBefore = 0
+    job.note = '继续取回，正在问服务端要结果'
+    job.stoppedWaiting = false
+    job.cancelRequested = false
+    jobs.set(job.id, job)
+    // Persist first: the task is written down as being followed before anything
+    // else happens, so a crash right here cannot lose it.
+    await persistJobs()
+    void tick()
+    return { job: jobView(job) }
+  }
+
+  /**
+   * On start, ask again about tasks whose result was left on the server.
+   *
+   * Only records still inside the service's retention window are worth asking
+   * about; an older one can only answer "gone", and a failed ask would turn a
+   * readable history entry into a misleading one.
+   */
+  async function resumeUnretrieved() {
+    const records = await loadTaskRecords(TASK_RECORD_LIMIT).catch(() => [])
+    const cutoff = Date.now() - QUEUE.retentionDays * 24 * 60 * 60 * 1000
+    const targets = records.filter(
+      (record) => record && record.status === 'unretrieved' && record.remoteId && Number(record.finishedAt) >= cutoff,
+    )
+    for (const record of targets) {
+      try {
+        await resumeJob(record.id)
+      } catch {
+        /* one unreadable record must not stop the others from coming back */
+      }
+    }
+  }
+
+  /** The parts of a stored record the queue needs to describe a resumed task. */
+  function taskRecordRequest(record) {
+    return {
+      mode: record && record.kind === 'image2image' ? 'image2image' : 'text2image',
+      prompt: String((record && record.prompt) || ''),
+      note: String((record && record.note) || ''),
+      presetId: String((record && record.presetId) || ''),
+      size: String((record && record.size) || ''),
+      batch: Number(record && record.count) || 1,
+      seed: null,
+      references: Array.isArray(record && record.referenceFiles) ? record.referenceFiles.length : 0,
+    }
+  }
+
   /** A disk record as the panel sees a job; its images are already in the gallery. */
   function viewFromTaskRecord(record) {
     const items = Array.isArray(record.resultNames) ? record.resultNames : []
@@ -1776,7 +1914,10 @@ export function apply(ctx, config) {
       remoteStatus: '',
       note: '',
       canceled: record.status === 'canceled' || record.status === 'abandoned',
-      discardOnDone: record.status === 'abandoned',
+      stoppedWaiting: false,
+      // A record whose result is still on the server can be picked up again; the
+      // panel offers 继续取回 for exactly this status.
+      resumable: record.status === 'unretrieved' && Boolean(record.remoteId),
       refUrls: (Array.isArray(record.referenceFiles) ? record.referenceFiles : [])
         .map((name) => /^ref-(\d+)\.png$/.exec(String(name)))
         .filter(Boolean)
@@ -1810,6 +1951,11 @@ export function apply(ctx, config) {
   async function recentJobs(limit = JOB_HISTORY_LIMIT) {
     const seen = new Set()
     const merged = []
+    // A task being followed right now still has its old record on disk (that
+    // record holds its reference copies). It belongs in "进行中", not here.
+    const liveIds = new Set(
+      [...jobs.values()].filter((job) => !isTerminalStatus(job.status)).map((job) => job.id),
+    )
     const fromMemory = [...jobs.values()]
       .filter((job) => isTerminalStatus(job.status))
       .sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0))
@@ -1818,7 +1964,7 @@ export function apply(ctx, config) {
       merged.push(jobView(job))
     }
     for (const record of await loadTaskRecords(limit)) {
-      if (seen.has(record.id)) continue
+      if (seen.has(record.id) || liveIds.has(record.id)) continue
       seen.add(record.id)
       merged.push(viewFromTaskRecord(record))
     }
@@ -1832,12 +1978,9 @@ export function apply(ctx, config) {
    * read would waste the whole run.
    */
   async function markSucceeded(job, state) {
-    // Cancelled after the service had already started: the result exists, but
-    // the user asked for it not to be kept, so nothing is downloaded or written.
-    if (job.discardOnDone) {
-      job.percent = 100
-      return finishJob(job, 'abandoned', '按你的要求，这次结果不保存')
-    }
+    // A cancel that arrived after the model started only ends the waiting. The
+    // task is still ours, so it is followed to the end and the image is saved --
+    // throwing it away is what made the user say the plugin lost the result.
     try {
       const result = await collectQueueItems(job, state)
       job.items = result.items
@@ -1847,8 +1990,19 @@ export function apply(ctx, config) {
       job.downloadFailures = (job.downloadFailures || 0) + 1
       // The same count bounds a download retry: both questions are "is the link
       // still there?", and neither should end a task that simply needs time.
-      if (error.gone || job.downloadFailures >= QUEUE.maxStatusFailures) {
-        return finishJob(job, 'failed', error.message || '下载结果失败')
+      if (error.gone) {
+        // The service answered: this result is not there any more. That is a real
+        // failure, and no amount of retrying will bring it back.
+        return finishJob(job, 'failed', error.message || '结果文件已经不在了')
+      }
+      if (job.downloadFailures >= QUEUE.maxStatusFailures) {
+        // The image exists; only the download keeps failing. Same state as an
+        // unreachable status read: the result is waiting to be claimed, not lost.
+        return finishJob(
+          job,
+          'unretrieved',
+          `图已经生成好，但一直取不回来（连续 ${job.downloadFailures} 次）。恢复后点「继续取回」`,
+        )
       }
       // Stay in flight so the next tick tries the download again.
       job.status = 'running'
@@ -1870,13 +2024,14 @@ export function apply(ctx, config) {
       if (error.gone) return finishJob(job, 'failed', `队列里查不到这个任务了：${error.message}`)
       job.statusFailures = (job.statusFailures || 0) + 1
       // This is a connection budget, not a task deadline: the task itself is
-      // fine, we just cannot see it, and 45 unreadable reads in a row are not a
-      // blip.
+      // fine, we just cannot see it. Giving up on the *record* here was the bug —
+      // the queue went on producing an image nobody could claim afterwards. The
+      // task id stays on the record, so `继续取回` can pick it up later.
       if (job.statusFailures >= QUEUE.maxStatusFailures) {
         return finishJob(
           job,
-          'failed',
-          `一直读不到任务进度（已连续 ${QUEUE.maxStatusFailures} 次），像是连接出了问题：${error.message}`,
+          'unretrieved',
+          `现在连不上服务，任务还在服务端（已连续 ${QUEUE.maxStatusFailures} 次读不到进度）。恢复后点「继续取回」`,
         )
       }
       job.note = `暂时读不到任务进度（第 ${job.statusFailures} 次），继续试`
@@ -1959,10 +2114,9 @@ export function apply(ctx, config) {
             finishJob(job, 'canceled', '已取消')
             continue
           }
-          // The service had already started it, so there is nothing to stop.
-          // Keep following it only to learn when the result can be thrown away.
-          job.canceled = true
-          job.discardOnDone = true
+          // The service had already started it, so there is nothing to stop —
+          // the wait ends, the task does not, and its result is still saved.
+          job.stoppedWaiting = true
         }
         void persistJobs()
       } catch (error) {
@@ -1994,14 +2148,10 @@ export function apply(ctx, config) {
     job.startedAt = Date.now()
     try {
       const response = await postImageService(job.submit.path, { body: job.submit.body, headers: job.submit.headers }, cfg.imageTimeoutMs)
-      if (job.cancelRequested) {
-        // A blocking call cannot be interrupted, so the image was generated
-        // anyway; the user asked for it not to be kept, which is its own end.
-        job.canceled = true
-        job.discardOnDone = true
-        finishJob(job, 'abandoned', '按你的要求，这次结果不保存')
-        return
-      }
+      // A blocking call cannot be interrupted, so the image was generated
+      // anyway. Cancelling only ended the user's wait; the picture is still
+      // theirs, so it is saved like any other result.
+      if (job.cancelRequested) job.stoppedWaiting = true
       const result = await collectItems(response, job.submit.request)
       job.items = result.items
       job.savedTo = result.savedTo
@@ -2743,12 +2893,15 @@ export function apply(ctx, config) {
         // Set before the first await: a submit already in flight re-checks this.
         job.cancelRequested = true
         if (job.blocking) {
-          // A blocking call cannot be interrupted, so the generation runs to the
-          // end and only the saving is dropped. That is not a failure and not an
-          // error: it is a result the user asked us not to keep.
-          job.discardOnDone = true
-          job.canceled = true
-          sendJson(res, 200, { job: jobView(job), canceled: false, reason: '已经开跑，做完不保存' })
+          // A blocking call cannot be interrupted. Rather than throw the result
+          // away, the wait simply stops here and the image is still saved when
+          // the call returns — the user asked to stop waiting, not to lose it.
+          job.stoppedWaiting = true
+          sendJson(res, 200, {
+            job: jobView(job),
+            canceled: false,
+            reason: '已经开跑，停不下来；跑完会照常存进作品',
+          })
           return
         }
         if (!job.remoteId) {
@@ -2767,19 +2920,33 @@ export function apply(ctx, config) {
           throw new HttpError(502, `取消没成功：${error.message}`)
         }
         if (!canceled) {
-          // The service cannot interrupt a generation that already started, and
-          // that is not an error: the task keeps running, the result is thrown
-          // away when it lands, and the user is told exactly that.
-          job.discardOnDone = true
-          job.canceled = true
+          // The service cannot interrupt a generation that already started. That
+          // is not an error and not a reason to lose the image: the task keeps
+          // running, we keep following it, and the result lands in the gallery.
+          job.stoppedWaiting = true
           void persistJobs()
-          sendJson(res, 200, { job: jobView(job), canceled: false, reason: '已经开跑，做完不保存' })
+          sendJson(res, 200, {
+            job: jobView(job),
+            canceled: false,
+            reason: '已经开跑，停不下来；跑完会照常存进作品',
+          })
           return
         }
         job.canceled = true
         finishJob(job, 'canceled', '已取消')
         void persistJobs()
         sendJson(res, 200, { job: jobView(job), canceled: true })
+        return
+      }
+      if (sub === 'jobs/resume') {
+        const body = await readJsonBody(req)
+        const outcome = await resumeJob(String(body?.id || ''))
+        if (!outcome || !outcome.job) {
+          const reason = (outcome && outcome.reason) || '这条任务现在取不回来'
+          // Nothing found at all is a 404; found-but-not-resumable is a 409.
+          throw new HttpError(outcome && outcome.missing ? 404 : 409, reason)
+        }
+        sendJson(res, 200, { job: outcome.job, already: Boolean(outcome.already) })
         return
       }
       if (sub === 'favorites') {
@@ -2878,6 +3045,9 @@ export function apply(ctx, config) {
         .catch((error) => {
           lastQueueError = error.message || String(error)
         })
+        // Records that ended as "result still on the server" get one attempt on
+        // start, so the user does not have to remember which ones to claim.
+        .then(() => resumeUnretrieved().catch(() => undefined))
         .then(() => tick())
       const handle = setInterval(() => void tick(), QUEUE.pollIntervalMs)
       if (typeof handle.unref === 'function') handle.unref()

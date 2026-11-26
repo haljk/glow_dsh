@@ -230,7 +230,10 @@ window.__ModuleLoader__.load({
       done: { word: '已完成', tone: 'ok' },
       failed: { word: '没成功', tone: 'bad' },
       canceled: { word: '已取消（模型还没开始）', tone: '' },
-      abandoned: { word: '已放弃（开跑了，结果不保存）', tone: '' },
+      // Still running on the service; this plugin just stopped watching.
+      unretrieved: { word: '结果待取回', tone: 'warn' },
+      // No longer produced, but records written by older versions still say it.
+      abandoned: { word: '已放弃（旧版本的行为）', tone: '' },
     }
 
     function jobStatusOf(job) {
@@ -527,6 +530,9 @@ window.__ModuleLoader__.load({
   white-space: nowrap; }
 .mw-stat.ok { color: var(--dsw-alias-state-success-primary); }
 .mw-stat.bad { color: var(--dsw-alias-state-error-primary); }
+/* 待取回：不是失败也不是成功，用警告色免得被当成"已经没了" */
+.mw-stat.warn { color: var(--dsw-alias-state-warn-primary);
+  background: color-mix(in oklab, var(--dsw-alias-state-warn-primary) 14%, var(--dsw-alias-bg-layer-1)); }
 .mw-spin { width: 12px; height: 12px; border-radius: 50%; flex: none;
   border: 2px solid var(--mw-edge);
   border-top-color: var(--dsw-alias-brand-primary); animation: mw-spin .8s linear infinite; }
@@ -1187,14 +1193,20 @@ window.__ModuleLoader__.load({
 
               const newlyDone = []
               let failure = ''
+              let unretrieved = null
               for (const job of finished) {
                 if (consumed.current.has(job.id)) continue
                 consumed.current.add(job.id)
                 if (job.status === 'done' && Array.isArray(job.items) && job.items.length > 0) {
                   newlyDone.push(job)
+                } else if (job.status === 'unretrieved') {
+                  // Not a failure and not silent either: the image is sitting on
+                  // the server, and the user is the only one who can decide to go
+                  // get it. Staying quiet here is what made it feel like a loss.
+                  unretrieved = job
                 } else if (job.status === 'failed') {
-                  // A canceled/abandoned job is not a failure — it is what the
-                  // user asked for, and it stays quiet here.
+                  // A canceled job is not a failure — it is what the user asked
+                  // for, and it stays quiet here.
                   failure = job.error || '这次没成功，换个描述再试一次'
                 }
               }
@@ -1211,6 +1223,16 @@ window.__ModuleLoader__.load({
                 const seedOf = items[0] && items[0].seed
                 if (seedOf !== undefined && seedOf !== null) setSeedValue(String(seedOf))
                 refreshHistory()
+              }
+              if (unretrieved) {
+                // A persistent toast: unlike a failure this one can still be
+                // fixed, so it stays until dismissed.
+                if (toastTimer.current) clearTimeout(toastTimer.current)
+                setToast({
+                  id: Math.random().toString(36).slice(2),
+                  kind: 'info',
+                  text: '有一条结果待取回：任务还在服务端，服务恢复后点「继续取回」',
+                })
               }
               if (failure) {
                 if (toastTimer.current) clearTimeout(toastTimer.current)
@@ -1680,14 +1702,29 @@ window.__ModuleLoader__.load({
           if (cancelBusy) return
           setCancelBusy(id)
           try {
-            // No 409 any more: a started job answers 200 with canceled:false and
-            // throws the result away, so there is nothing to "wait out" here.
+            // A started job answers 200 with canceled:false: the service cannot
+            // stop the model, so only our waiting ends. The image is still saved.
             const res = await call('/jobs/cancel', { method: 'POST', body: { id } })
             notify(
               res && res.canceled === false
-                ? res.reason || '它已经开跑了，结果会按你的要求丢掉'
+                ? res.reason || '已经开跑，停不下来；跑完会照常存进作品'
                 : '已取消，这个任务不会再有结果',
             )
+            syncJobs()
+          } catch (err) {
+            failToast(err.message)
+          } finally {
+            setCancelBusy('')
+          }
+        }
+
+        /** Ask the service again about a task whose result stayed behind. */
+        async function resumeJob(id) {
+          if (cancelBusy) return
+          setCancelBusy(id)
+          try {
+            await call('/jobs/resume', { method: 'POST', body: { id } })
+            notify('正在继续取回，结果跑完就会存进作品')
             syncJobs()
           } catch (err) {
             failToast(err.message)
@@ -2754,7 +2791,9 @@ window.__ModuleLoader__.load({
                           : '排队中 · 下一个就轮到'
                         : '正在做' +
                           (percent > 0 ? ' · ' + percent + '%' : '') +
-                          (eta > 0 ? ' · 大约还要 ' + formatDuration(eta) : ''),
+                          (eta > 0 ? ' · 大约还要 ' + formatDuration(eta) : '') +
+                          // The wait was cancelled but the model keeps working.
+                          (job.stoppedWaiting ? ' · 跑完照常存进作品' : ''),
                     ),
                     h(
                       'div',
@@ -2774,10 +2813,10 @@ window.__ModuleLoader__.load({
                       type: 'button', className: 'mw-btn tiny', disabled: cancelBusy === job.id,
                       title: queued
                         ? '现在取消，这个任务不会开始'
-                        : '它已经开跑了：取消会让结果跑完就丢掉，不会再出现',
+                        : '已经开跑了：只能不在这儿等，图跑完会照常存进作品',
                       onClick: () => cancelJob(job.id),
                     },
-                    cancelBusy === job.id ? '取消中…' : '取消',
+                    cancelBusy === job.id ? '处理中…' : queued ? '取消' : '不等了',
                   ),
                 )
               }),
@@ -2788,15 +2827,28 @@ window.__ModuleLoader__.load({
           ? h(
               'div',
               { key: 'recent', className: 'mw-jobs' },
-              recentJobs.slice(0, 12).map((job) => {
+              // Records waiting to be claimed float to the top: there are only
+              // twelve rows, and one that scrolls away is one the user cannot act
+              // on. Order inside each group stays newest-first.
+              recentJobs
+                .slice()
+                .sort((a, b) => {
+                  const waitA = a.status === 'unretrieved' ? 0 : 1
+                  const waitB = b.status === 'unretrieved' ? 0 : 1
+                  if (waitA !== waitB) return waitA - waitB
+                  return (b.finishedAt || b.createdAt || 0) - (a.finishedAt || a.createdAt || 0)
+                })
+                .slice(0, 12)
+                .map((job) => {
                 const status = jobStatusOf(job)
                 const stamp = shortTime(job.finishedAt || job.createdAt)
                 const reason = job.error || (job.status === 'canceled'
                   ? '还没轮到它就被取消了'
-                  : job.status === 'abandoned'
-                    ? '你要求取消时它已经开跑，结果按你的要求丢掉了'
+                  : job.status === 'unretrieved'
+                    ? '任务还在服务端，只是暂时连不上；恢复后点「继续取回」'
                     : '')
                 const items = Array.isArray(job.items) ? job.items : []
+                const canResume = (job.resumable || job.status === 'unretrieved') && job.remoteId
                 return h(
                   'div',
                   { key: job.id, className: 'mw-jobsrow' },
@@ -2807,6 +2859,17 @@ window.__ModuleLoader__.load({
                     { className: 'grow', title: reason || job.note || '' },
                     reason || job.note || humanisePrompt(job.request && job.request.prompt).slice(0, 40),
                   ),
+                  canResume
+                    ? h(
+                        'button',
+                        {
+                          type: 'button', className: 'mw-btn tiny', disabled: submitting,
+                          title: '按任务号再去问一次服务端，把结果取回来',
+                          onClick: () => resumeJob(job.id),
+                        },
+                        '继续取回',
+                      )
+                    : null,
                   items.length > 0
                     ? h(
                         'button',
