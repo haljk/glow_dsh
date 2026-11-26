@@ -1,5 +1,7 @@
 # Glow（阁楼）
 
+> 本目录是 **DSH 插件版**的根目录（package.json 在这里）。Android 版在同级 ../android/，../tools/ 与 ../dist/ 也是 Android 那边的。
+
 一个人的图像工作室，作为 [DeepSeek Harness](https://github.com/deepseek-ai) 插件运行。
 
 写一句话出图、拿一张照片精修、多张图按用途合成。所有推理都走局域网里的本地模型服务，不经过任何第三方接口。
