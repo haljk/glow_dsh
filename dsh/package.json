@@ -18,8 +18,8 @@
   "scripts": {
     "check": "node --check index.js && node --check client.js",
     "test": "node tools/check-glow.mjs",
-    "test:e2e": "node tools/check-edit-verbatim.mjs && node tools/check-recovery.mjs",
-    "verify": "node --check index.js && node --check client.js && node tools/check-glow.mjs && node tools/check-edit-verbatim.mjs && node tools/check-recovery.mjs"
+    "test:e2e": "node tools/check-edit-verbatim.mjs && node tools/check-recovery.mjs && node tools/check-notice.mjs && node tools/check-notice-run.mjs",
+    "verify": "node --check index.js && node --check client.js && node tools/check-glow.mjs && node tools/check-edit-verbatim.mjs && node tools/check-recovery.mjs && node tools/check-notice.mjs && node tools/check-notice-run.mjs"
   },
   "files": [
     "index.js",

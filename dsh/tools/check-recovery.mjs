@@ -79,6 +79,10 @@ const service = http.createServer((req, res) => {
         return
       }
       res.writeHead(200, { 'content-type': 'application/json' })
+      if (statusScript === 'queued') {
+        res.end(JSON.stringify({ id: 'fake', status: 'queued', progress: { percent: 0 } }))
+        return
+      }
       if (statusScript === 'running') {
         res.end(JSON.stringify({ id: 'fake', status: 'running', progress: { percent: 40 } }))
         return
@@ -291,7 +295,9 @@ check('不存在的任务号被拒绝', response.status === 404, response.text)
 
 // ============================================================ 3) 排队中取消
 
-statusScript = 'running'
+// The service keeps answering "queued", so the cancel really can land before
+// the model starts — otherwise this section races its own first status read.
+statusScript = 'queued'
 response = await call('/edit', { refs, note: '换个背景', size: '1024x1024' })
 const queuedJob = response.json?.job?.id
 const beforeQueued = await galleryCount()

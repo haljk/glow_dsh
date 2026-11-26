@@ -35,6 +35,9 @@ window.__ModuleLoader__.load({
       }
       if ((opts.method || 'GET') === 'POST') headers['x-glow'] = '1'
       init.headers = headers
+      // A caller with nobody waiting on screen (the job watcher) must not be able
+      // to hang for the life of the session on one stuck request.
+      if (opts.timeoutMs) init.signal = AbortSignal.timeout(opts.timeoutMs)
       let res
       try {
         res = await fetch(ROUTE + path, init)
@@ -684,6 +687,55 @@ window.__ModuleLoader__.load({
 }
 `
 
+    /**
+     * Styles for the frame-wide notice, kept **out** of the panel's stylesheet.
+     *
+     * The panel renders `CSS` from inside its own root, so those rules leave the
+     * document with the panel — and the notice exists precisely when the panel is
+     * gone. Without these rules the toast renders as loose text, and the hidden
+     * live region becomes visible text that also swallows clicks across the top
+     * of the window. `apply` installs this once for the plugin's lifetime.
+     */
+    const NOTICE_CSS = `
+/* 外层铺满整框但不吃点击：只有提示本身接住指针，绝不挡住下面的界面。 */
+.gl-notices.gl-notices { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
+        /* 右下角、抬高到输入框之上：那里不压发送按钮，也比左上更容易被余光看到。 */
+.gl-toasts { position: absolute; inset-block-end: 96px; inset-inline-end: 24px;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+  max-width: min(400px, calc(100vw - 48px)); pointer-events: none; }
+.gl-toast { pointer-events: auto; display: flex; align-items: flex-start; gap: 10px;
+  padding: 14px 12px 14px 14px; border-radius: 16px; line-height: 1.5;
+  min-width: 300px;
+  background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary);
+  border: 1px solid color-mix(in oklab, var(--dsw-alias-label-primary) 14%, transparent);
+  box-shadow: 0 10px 36px color-mix(in oklab, CanvasText 22%, transparent);
+  animation: gl-toast-in .2s ease-out; }
+.gl-toast.ok { border-inline-start: 4px solid var(--dsw-alias-state-success-primary); }
+.gl-toast.unretrieved { border-inline-start: 4px solid var(--dsw-alias-state-warn-primary); }
+.gl-toast.failed { border-inline-start: 4px solid var(--dsw-alias-state-error-primary); }
+.gl-toast-mark { flex: none; width: 9px; height: 9px; border-radius: 50%; margin-top: 7px;
+  background: var(--dsw-alias-label-secondary); }
+.gl-toast.ok .gl-toast-mark { background: var(--dsw-alias-state-success-primary); }
+.gl-toast.unretrieved .gl-toast-mark { background: var(--dsw-alias-state-warn-primary); }
+.gl-toast.failed .gl-toast-mark { background: var(--dsw-alias-state-error-primary); }
+.gl-toast-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.gl-toast-title { font-size: 15px; font-weight: 600; word-break: break-word; }
+.gl-toast-text { font-size: 13.5px; color: var(--dsw-alias-label-secondary); word-break: break-word; }
+.gl-toast-open { flex: none; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+  background: none; border: none; padding: 4px 8px; border-radius: 10px; align-self: center;
+  color: var(--dsw-alias-brand-primary); text-decoration: underline; }
+.gl-toast-close { flex: none; font: inherit; font-size: 16px; line-height: 1; cursor: pointer;
+  background: none; border: none; padding: 4px 6px; min-width: 32px; min-height: 32px;
+  border-radius: 10px; color: var(--dsw-alias-label-secondary); align-self: flex-start; }
+.gl-toast-open:hover, .gl-toast-close:hover { background: var(--dsw-alias-bg-layer-2); }
+.gl-toast-open:focus-visible, .gl-toast-close:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+@keyframes gl-toast-in { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .gl-toast { animation: none; } }
+/* 只在读屏器里存在的播报区，自始至终挂在页面上 */
+.gl-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+`
+
     // ------------------------------------------------------------ components
 
     function PanelIcon(props) {
@@ -836,9 +888,28 @@ window.__ModuleLoader__.load({
 
     // ---------------------------------------------------------------- workbench
 
-    function createWorkbench(ctx) {
+    function createWorkbench(ctx, watch) {
       return function Workbench() {
         const t = useT(ctx)
+
+        // While this panel is mounted its own poller owns the job list; the
+        // frame-wide watcher stands down so nothing is announced twice. On the
+        // way out it hands over two things: what it has looked at, and which
+        // jobs it saw but never got to say out loud — its own round runs every
+        // 2.5 s, and a job that settled inside that last slice would otherwise
+        // be announced by neither side.
+        const mountedAt = React.useRef(Date.now())
+        const announced = React.useRef(new Set())
+        const recentRef = React.useRef([])
+        React.useEffect(() => {
+          watch.setPanelOpen(true)
+          return () => {
+            const owed = recentRef.current.filter(
+              (job) => Number(job.finishedAt) >= mountedAt.current && !announced.current.has(job.id),
+            )
+            watch.setPanelOpen(false, { seen: consumed.current, owed })
+          }
+        }, [])
 
         const [scenario, setScenario] = React.useState('text')
         const [caps, setCaps] = React.useState(null)
@@ -1182,6 +1253,8 @@ window.__ModuleLoader__.load({
               const finished = Array.isArray(data.recent) ? data.recent : []
               // Kept for the viewer (a job's refUrls) and for the 最近记录 list.
               setRecentJobs(finished)
+              // Read again by the unmount hand-off, which must not see a stale list.
+              recentRef.current = finished
 
               // On the first read, only remember what already happened: those
               // jobs belong to earlier visits and must not overwrite "本次结果".
@@ -1212,6 +1285,7 @@ window.__ModuleLoader__.load({
               }
               // `recent` is newest-first, so the freshest result stays on top.
               if (newlyDone.length > 0) {
+                for (const job of newlyDone) announced.current.add(job.id)
                 const items = newlyDone.reduce((acc, job) => acc.concat(job.items), [])
                 setResults(items)
                 if (toastTimer.current) clearTimeout(toastTimer.current)
@@ -1225,6 +1299,7 @@ window.__ModuleLoader__.load({
                 refreshHistory()
               }
               if (unretrieved) {
+                announced.current.add(unretrieved.id)
                 // A persistent toast: unlike a failure this one can still be
                 // fixed, so it stays until dismissed.
                 if (toastTimer.current) clearTimeout(toastTimer.current)
@@ -3735,7 +3810,9 @@ window.__ModuleLoader__.load({
 
         return h(
           'div',
-          { className: 'mw-root', ref: rootRef },
+          // `data-glow-root` + tabIndex -1 give the window-wide notice somewhere
+          // to land focus after it opens this panel and removes itself.
+          { className: 'mw-root', ref: rootRef, 'data-glow-root': '', tabIndex: -1 },
           h('style', null, CSS),
           head,
           h(
@@ -3766,6 +3843,320 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // ------------------------------------------------------- frame-wide notices
+
+    /**
+     * Follows finished jobs for the frame-wide notice.
+     *
+     * The panel's own poller dies with the panel, which is exactly when someone
+     * is most likely waiting elsewhere. This watcher polls **only while the panel
+     * is closed**, so the two never run at the same time and one job is never
+     * announced twice.
+     */
+    function createJobWatch() {
+      const listeners = new Set()
+      const seen = new Set()
+      let notices = []
+      let seq = 0
+      let primed = false
+      let panelOpen = 0
+      let timer = null
+      let busy = false
+
+      function emit() {
+        for (const listener of [...listeners]) listener()
+      }
+
+      function dismiss(id) {
+        const next = notices.filter((notice) => notice.id !== id)
+        if (next.length === notices.length) return
+        notices = next
+        emit()
+      }
+
+      function push(notice) {
+        // The panel came back while this read was in flight: its own list says
+        // the same thing in more detail, so drop it instead of covering the page.
+        if (panelOpen > 0) return
+        seq += 1
+        // Three at most: a taller stack would cover the page it informs about.
+        notices = notices.concat(Object.assign({ id: 'n' + seq }, notice)).slice(-3)
+        emit()
+      }
+
+      /** What to say about one settled job, or null when it is not worth saying. */
+      function noticeFor(job) {
+        if (job.status === 'done' && Array.isArray(job.items) && job.items.length > 0) {
+          return { kind: 'ok', count: job.items.length }
+        }
+        if (job.status === 'unretrieved') return { kind: 'unretrieved' }
+        if (job.status === 'failed') return { kind: 'failed', detail: job.error || '' }
+        // A cancel is what the user asked for; it stays quiet, like the panel.
+        return null
+      }
+
+      async function poll() {
+        if (busy || panelOpen > 0) return
+        busy = true
+        try {
+          // A read that never returns would hold `busy` forever and silence the
+          // watcher for the rest of the session; 10 s is far past a local answer.
+          const data = await call('/jobs', { timeoutMs: 10000 })
+          const finished = Array.isArray(data.recent) ? data.recent : []
+          // No hand-off list (the panel never mounted): the first look only
+          // catches up, since those jobs settled before anyone was watching.
+          if (!primed) {
+            primed = true
+            for (const job of finished) seen.add(job.id)
+            return
+          }
+          // The panel came back while this read was in flight. Return before
+          // marking anything: a job marked as seen here would never be announced
+          // by either side.
+          if (panelOpen > 0) return
+          const fresh = []
+          for (const job of finished) {
+            if (seen.has(job.id)) continue
+            seen.add(job.id)
+            const notice = noticeFor(job)
+            if (notice) fresh.push(notice)
+          }
+          // Oldest first so the newest ends up at the bottom of the stack.
+          for (const notice of fresh.reverse()) push(notice)
+        } catch {
+          // A watcher that cannot reach the plugin stays quiet: connection
+          // trouble is the open panel's story to tell, and a notice about the
+          // notifier itself would be one more thing to dismiss.
+        } finally {
+          busy = false
+        }
+      }
+
+      return {
+        subscribe(listener) {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        snapshot() {
+          return notices
+        },
+        dismiss,
+        /**
+         * @param open - true while the panel mounts, false as it unmounts.
+         * @param handoff - what the panel leaves behind: `seen` are the ids it
+         *   looked at, `owed` are jobs it saw but never got to tell the user
+         *   about (its own round runs every 2.5 s). Without `owed`, a job that
+         *   settled in that last slice would be announced by neither side.
+         */
+        setPanelOpen(open, handoff) {
+          panelOpen = Math.max(0, panelOpen + (open ? 1 : -1))
+          if (panelOpen > 0) {
+            // The panel shows the same news in more detail; a leftover toast
+            // pointing at what is now on screen is just something to dismiss.
+            if (notices.length > 0) {
+              notices = []
+              emit()
+            }
+            return
+          }
+          if (handoff) {
+            for (const id of handoff.seen || []) seen.add(id)
+            primed = true
+            for (const job of handoff.owed || []) {
+              if (seen.has(job.id)) continue
+              seen.add(job.id)
+              const notice = noticeFor(job)
+              if (notice) push(notice)
+            }
+          } else {
+            primed = false
+          }
+          void poll()
+        },
+        start() {
+          if (timer) return
+          timer = setInterval(() => {
+            if (panelOpen === 0) void poll()
+          }, 4000)
+        },
+        stop() {
+          if (timer) clearInterval(timer)
+          timer = null
+        },
+      }
+    }
+
+    /** `{count}` in a dictionary string, filled without assuming an ICU format. */
+    function fill(template, vars) {
+      return String(template).replace(/\{(\w+)\}/g, (whole, key) =>
+        Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key]) : whole,
+      )
+    }
+
+    function createJobNotices(ctx, watch) {
+      /**
+       * Open the panel and put focus inside it.
+       *
+       * The button that asked for this disappears with its toast, so without a
+       * landing spot a keyboard user would be dropped at the top of the document
+       * with no idea where they ended up.
+       */
+      function showPanel() {
+        try {
+          ctx.layout.selectPanel(PANEL_ID)
+        } catch {
+          /* the panel is not registered during shutdown; nothing to open */
+        }
+        // The panel mounts on the next frames, not synchronously.
+        let tries = 0
+        const land = () => {
+          const root = document.querySelector('[data-glow-root]')
+          if (root && typeof root.focus === 'function') {
+            root.focus()
+            return
+          }
+          tries += 1
+          if (tries < 10) requestAnimationFrame(land)
+        }
+        requestAnimationFrame(land)
+      }
+
+      /** Title and detail for a notice: a headline the eye catches, then the fact. */
+      function noticeText(t, notice) {
+        if (notice.kind === 'ok') {
+          return [t('notice.doneTitle'), fill(t('notice.doneBody'), { count: notice.count })]
+        }
+        if (notice.kind === 'unretrieved') {
+          return [t('notice.unretrievedTitle'), t('notice.unretrievedBody')]
+        }
+        if (notice.kind === 'failed') {
+          const reason = String(notice.detail || '').trim().slice(0, 60)
+          // The panel already refuses to show a bare colon; the toast must not
+          // show a blank second line either when the reason came back empty.
+          return [t('notice.failedTitle'), reason || t('notice.failedPlain')]
+        }
+        return ['', '']
+      }
+
+      /** What a screen reader hears: one sentence, not two boxes. */
+      function noticeSpeech(t, notice) {
+        const parts = noticeText(t, notice).filter(Boolean)
+        return parts.join('，')
+      }
+
+      function Notice(props) {
+        const { notice, t, onDismiss } = props
+        const [held, setHeld] = React.useState(false)
+        const dismiss = React.useCallback(() => onDismiss(notice.id), [onDismiss, notice.id])
+
+        // Pausing while the pointer or the keyboard is on the toast: taking away
+        // something being read or reached for is how toasts become hostile.
+        React.useEffect(() => {
+          if (held) return undefined
+          const id = setTimeout(dismiss, 15000)
+          return () => clearTimeout(id)
+        }, [held, dismiss])
+
+        const parts = noticeText(t, notice)
+
+        return h(
+          'div',
+          {
+            className: 'gl-toast ' + notice.kind,
+            onFocus: () => setHeld(true),
+            onBlur: () => setHeld(false),
+            onMouseEnter: () => setHeld(true),
+            onMouseLeave: () => setHeld(false),
+          },
+          h('span', { className: 'gl-toast-mark', 'aria-hidden': 'true' }),
+          h(
+            'div',
+            { className: 'gl-toast-body' },
+            h('span', { className: 'gl-toast-title' }, parts[0]),
+            h('span', { className: 'gl-toast-text' }, parts[1]),
+          ),
+          h(
+            'button',
+            {
+              type: 'button', className: 'gl-toast-open',
+              onClick: () => {
+                dismiss()
+                showPanel()
+              },
+            },
+            t('notice.view'),
+          ),
+          h(
+            'button',
+            {
+              type: 'button', className: 'gl-toast-close', 'aria-label': t('notice.close'),
+              onClick: dismiss,
+            },
+            '×',
+          ),
+        )
+      }
+
+      return function JobNotices(props) {
+        const t = props.t
+        const source = props.watch || watch
+        const [notices, setNotices] = React.useState(source.snapshot())
+        // Where focus was before the first toast appeared, so dismissing the last
+        // one does not drop a keyboard user at the top of the document.
+        const returnFocus = React.useRef(null)
+
+        React.useEffect(() => source.subscribe(() => setNotices(source.snapshot())), [])
+
+        React.useEffect(() => {
+          if (notices.length === 0 || returnFocus.current) return
+          returnFocus.current = document.activeElement
+          return () => {
+            returnFocus.current = null
+          }
+        }, [notices.length === 0])
+
+        const onDismiss = React.useCallback((id) => {
+          const wasLast = source.snapshot().length <= 1
+          source.dismiss(id)
+          // After the state settles: next toast, or back where the user was.
+          requestAnimationFrame(() => {
+            const next = document.querySelector('.gl-toast-close')
+            if (next && typeof next.focus === 'function') {
+              next.focus()
+              return
+            }
+            if (!wasLast) return
+            const back = returnFocus.current
+            if (back && back !== document.body && typeof back.focus === 'function' && back.isConnected) back.focus()
+          })
+        }, [])
+
+        const latest = notices.length > 0 ? notices[notices.length - 1] : null
+
+        return h(
+          'div',
+          { className: 'gl-notices' },
+          // Mounted from boot and only ever re-texted: a live region created at
+          // the same moment as its content is a region screen readers miss. The
+          // text, not the internal id, is what gets read out.
+          h(
+            'div',
+            { className: 'gl-sr', role: 'status', 'aria-live': 'polite' },
+            latest ? noticeSpeech(t, latest) : '',
+          ),
+          notices.length === 0
+            ? null
+            : h(
+                'div',
+                { className: 'gl-toasts', role: 'region', 'aria-label': t('notice.region') },
+                notices.map((notice) =>
+                  h(Notice, { key: notice.id, notice, t, onDismiss }),
+                ),
+              ),
+        )
+      }
+    }
+
     // ------------------------------------------------------------------- apply
 
     return {
@@ -3778,12 +4169,51 @@ window.__ModuleLoader__.load({
                 title: '阁楼',
                 'results.current': '本次结果',
                 'panel.label': '阁楼',
+                'notice.region': '阁楼任务通知',
+                'notice.doneTitle': '做好了',
+                'notice.doneBody': '{count} 张已存到本机',
+                'notice.failedTitle': '这次没成功',
+                'notice.failedPlain': '没有给出原因，换个描述再试一次',
+                'notice.unretrievedTitle': '结果待取回',
+                'notice.unretrievedBody': '任务还在服务端，连上后点「继续取回」',
+                'notice.view': '查看',
+                'notice.close': '关闭这条通知',
               },
             }),
           'glow: dictionaries',
         )
 
-        const Workbench = createWorkbench(ctx)
+        const watch = createJobWatch()
+        ctx.effect(() => {
+          watch.start()
+          return () => watch.stop()
+        }, 'glow: job watch')
+
+        // The notice outlives the panel, so its rules cannot ride on the panel's
+        // own <style> element: they live in the document instead, for exactly as
+        // long as this plugin is loaded.
+        ctx.effect(() => {
+          const style = document.createElement('style')
+          style.setAttribute('data-glow-notices', '')
+          style.textContent = NOTICE_CSS
+          document.head.appendChild(style)
+          return () => style.remove()
+        }, 'glow: notice styles')
+
+        const Workbench = createWorkbench(ctx, watch)
+        const JobNotices = createJobNotices(ctx, watch)
+
+        ctx.slots.inject('shell.overlay', () =>
+          ctx.slots.register(
+            {
+              name: 'shell.overlay', id: 'glow.notices', order: 90, locale: NS,
+              // The watcher goes in through the injection face so it can be
+              // driven without a browser; the component reads it from props.
+              inject: () => ({ watch }),
+            },
+            JobNotices,
+          ),
+        )
 
         ctx.slots.inject('sidebar.panellist', () =>
           ctx.slots.register(
