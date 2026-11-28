@@ -10,7 +10,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
-ROOT = Path(r"D:\Texts\00_个人资料\AI Native\20261121 个人多媒体工作台\glow")
+ROOT = Path(r"D:\JKWorkSpace\glow")
 # The screenshot set belongs to the Android app, so it lives with that app's
 # history rather than beside the plugin's own docs.
 SHOTS = ROOT / "android" / "history" / "screenshots"

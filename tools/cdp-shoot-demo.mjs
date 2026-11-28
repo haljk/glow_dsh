@@ -9,7 +9,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
-const DEMO = "D:/Texts/00_个人资料/AI Native/20261121 个人多媒体工作台/【UIUX建议】glow-demo.html";
+const DEMO = "D:/JKWorkSpace/glow/tools/glow-demo.html";
 const OUT = "C:/glow-build/demo-shots";
 const PORT = 9333;
 const URL = "file:///" + encodeURI(DEMO).replace(/#/g, "%23");
